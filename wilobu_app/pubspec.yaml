@@ -1,0 +1,41 @@
+name: wilobu_app
+description: Aplicación móvil Wilobu
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: '^3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Iconos estilo iOS
+  cupertino_icons: ^1.0.6
+
+  # Gestión de Estado y Rutas
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.0
+
+  # Firebase
+  firebase_core: ^3.4.0
+  firebase_auth: ^5.1.0
+  cloud_firestore: ^5.0.0
+
+  # Bluetooth y Permisos (CRÍTICOS para que funcione el escaneo)
+  flutter_blue_plus: ^1.32.8
+  permission_handler: ^11.3.1  # Actualizado a la última versión estable
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  
+  # Assets (Imágenes)
+  # Nota: Dejar la carpeta raíz es más práctico para no tener que listar cada archivo nuevo
+  assets:
+    - assets/images/
