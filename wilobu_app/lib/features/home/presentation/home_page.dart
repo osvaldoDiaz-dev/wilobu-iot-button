@@ -134,16 +134,6 @@ class _HomePageState extends ConsumerState<HomePage> {
                   ],
                 ),
               ),
-              PopupMenuItem(
-                value: AppThemeMode.wilobu,
-                child: Row(
-                  children: [
-                    Icon(Icons.auto_awesome, color: ref.watch(themeControllerProvider) == AppThemeMode.wilobu ? Colors.blue : null),
-                    const SizedBox(width: 12),
-                    const Text('Wilobu Theme'),
-                  ],
-                ),
-              ),
             ],
           ),
           IconButton(icon: const Icon(Icons.logout), onPressed: () {

@@ -19,7 +19,14 @@ functions/           → Cloud Functions (FCM Notifications)
 cloudflare-worker/   → Security Proxy
 ```
 
-## 🚀 Inicio Rápido (PARA EVALUADOR)
+## 🚀 Inicio Rápido (PARA EVALUAR EN MÓVIL)
+
+### Requisitos Mínimos
+- Flutter 3.38+
+- Dispositivo Android/iOS conectado (o emulador)
+- Conexión a Internet (para Firebase)
+
+### ⚡ Opción 1: Automático (Recomendado)
 
 **Windows:**
 ```bash
@@ -31,18 +38,55 @@ start_app.bat
 bash start_app.sh
 ```
 
-**Manual:**
+### ⚡ Opción 2: Precompilación + Ejecución
+
+**Windows:**
 ```bash
-cd wilobu_app
-flutter pub get
+wilobu_app\precompile.bat
+```
+
+**macOS/Linux:**
+```bash
+bash wilobu_app/precompile.sh
+```
+
+Luego ejecuta:
+```bash
 flutter run
 ```
 
+### ⚡ Opción 3: Manual Paso a Paso
+
+```bash
+cd wilobu_app
+
+# Limpiar proyecto (opcional pero recomendado)
+flutter clean
+
+# Instalar dependencias
+flutter pub get
+
+# Ejecutar en dispositivo
+flutter run
+
+# Para ver logs detallados:
+flutter run -v
+```
+
 ### 📱 Qué Esperar
-- App inicia en pantalla de login
-- Prueba con cualquier email/contraseña
-- Dashboard muestra lista de dispositivos
-- Botón "Agregar Wilobu" para emparejamiento BLE
+
+1. **Primera pantalla:** Login
+   - Email: Cualquier correo (ej: test@example.com)
+   - Contraseña: Cualquier contraseña (sin validación)
+   - Botón: "Conectar"
+
+2. **Dashboard:** Lista de dispositivos
+   - Botón flotante "+" para agregar dispositivo
+   - Botón "Contactos" en la esquina superior
+   - Selector de tema (Claro/Oscuro)
+
+3. **Flujo Completo:**
+   - Login → Dashboard → Agregar Dispositivo (BLE) → Manage Contacts → SOS Alert
 
 ## 🔧 Detalles Técnicos
 
