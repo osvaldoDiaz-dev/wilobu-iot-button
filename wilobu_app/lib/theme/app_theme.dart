@@ -1,99 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// Modos de tema disponibles en la app.
-enum AppThemeMode {
-  light,
-  dark,
-  wilobu, // fondo pastel + branding Wilobu
-}
+final themeControllerProvider = StateNotifierProvider<ThemeNotifier, AppThemeMode>((ref) {
+  return ThemeNotifier();
+});
 
-/// StateNotifier para controlar el tema actual.
-class ThemeController extends StateNotifier<AppThemeMode> {
-  ThemeController() : super(AppThemeMode.light);
+enum AppThemeMode { light, dark }
 
-  void setTheme(AppThemeMode mode) => state = mode;
-}
-
-/// Provider global para leer / cambiar el tema.
-final themeControllerProvider =
-    StateNotifierProvider<ThemeController, AppThemeMode>(
-  (ref) => ThemeController(),
-);
-
-/// Helper para obtener el ThemeData según el modo.
-class AppThemes {
-  static ThemeData of(AppThemeMode mode) {
-    switch (mode) {
-      case AppThemeMode.dark:
-        return _dark;
-      case AppThemeMode.wilobu:
-        return _wilobu;
-      case AppThemeMode.light:
-      default:
-        return _light;
-    }
+class ThemeNotifier extends StateNotifier<AppThemeMode> {
+  ThemeNotifier() : super(AppThemeMode.dark) {
+    _loadTheme();
   }
 
-  // Base light
-  static final _baseLight = ThemeData(
-    useMaterial3: true,
-    brightness: Brightness.light,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: Colors.indigo,
-      brightness: Brightness.light,
-    ),
-  );
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final themeIndex = prefs.getInt('theme_mode') ?? 1;
+    state = AppThemeMode.values[themeIndex];
+  }
 
-  // Base dark
-  static final _baseDark = ThemeData(
-    useMaterial3: true,
-    brightness: Brightness.dark,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: Colors.indigo,
-      brightness: Brightness.dark,
-    ),
-  );
+  Future<void> setTheme(AppThemeMode mode) async {
+    state = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('theme_mode', mode.index);
+  }
+}
 
-  /// Tema claro estándar
-  static final ThemeData _light = _baseLight.copyWith(
-    scaffoldBackgroundColor: const Color(0xFFF8F7FD),
-    cardTheme: const CardThemeData(
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.all(Radius.circular(24)),
+class AppTheme {
+  static const seedColor = Color(0xFF6366F1);
+
+  static ThemeData getTheme(AppThemeMode mode) {
+    return _buildTheme(mode == AppThemeMode.dark ? Brightness.dark : Brightness.light);
+  }
+
+  static ThemeData _buildTheme(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: ColorScheme.fromSeed(seedColor: seedColor, brightness: brightness),
+      scaffoldBackgroundColor: isDark ? const Color(0xFF121212) : Colors.white,
+      appBarTheme: AppBarTheme(
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        elevation: 0,
+        centerTitle: true,
+        iconTheme: IconThemeData(color: isDark ? Colors.white : Colors.black),
+        titleTextStyle: TextStyle(
+          color: isDark ? Colors.white : Colors.black,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
       ),
-    ),
-  );
-
-  /// Tema oscuro estándar
-  static final ThemeData _dark = _baseDark.copyWith(
-    scaffoldBackgroundColor: const Color(0xFF11121A),
-    cardTheme: const CardThemeData(
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.all(Radius.circular(24)),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: isDark ? const Color(0xFF2A2A2A) : Colors.grey[100],
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
       ),
-    ),
-  );
-
-  /// Tema “Wilobu Theme”: pensado para usarse con el fondo pastel
-  static final ThemeData _wilobu = _baseLight.copyWith(
-    // El fondo real lo pone el Home con una imagen; aquí lo dejamos transparente
-    scaffoldBackgroundColor: Colors.transparent,
-    cardTheme: const CardThemeData(
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      color: Colors.white70,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.all(Radius.circular(24)),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
       ),
-    ),
-    textTheme: _baseLight.textTheme.apply(
-      bodyColor: const Color(0xFF3A325F),
-      displayColor: const Color(0xFF3A325F),
-    ),
-  );
+    );
+  }
 }

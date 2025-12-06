@@ -19,13 +19,19 @@ dependencies:
   go_router: ^14.2.0
 
   # Firebase
-  firebase_core: ^3.4.0
-  firebase_auth: ^5.1.0
-  cloud_firestore: ^5.0.0
+  firebase_core: ^2.32.0
+  firebase_auth: ^4.20.0
+  cloud_firestore: ^4.17.5
 
   # Bluetooth y Permisos (CRÍTICOS para que funcione el escaneo)
   flutter_blue_plus: ^1.32.8
   permission_handler: ^11.3.1  # Actualizado a la última versión estable
+  
+  # URL Launcher para llamadas y mapas
+  url_launcher: ^6.3.1
+  
+  # Persistencia de preferencias
+  shared_preferences: ^2.3.3
 
 dev_dependencies:
   flutter_test:

@@ -1,0 +1,58 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Función helper para verificar autenticación
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Función helper para verificar propiedad
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    // Reglas para la colección de usuarios
+    match /users/{userId} {
+      // Cualquier usuario autenticado puede leer cualquier perfil público (para búsqueda por email)
+      allow read: if isSignedIn();
+      
+      // Solo el dueño puede escribir su propio perfil
+      allow write: if isOwner(userId);
+      
+      // Subcolección de solicitudes de contacto
+      match /contactRequests/{requestId} {
+        // El dueño puede leer sus propias solicitudes
+        allow read: if isOwner(userId);
+        
+        // Cualquier usuario autenticado puede crear una solicitud para otro usuario
+        allow create: if isSignedIn();
+        
+        // Solo el dueño puede eliminar sus solicitudes (aceptar/rechazar)
+        allow delete: if isOwner(userId);
+      }
+      
+      // Subcolección de dispositivos
+      match /devices/{deviceId} {
+        // El dueño puede leer/escribir sus propios dispositivos
+        allow read, write: if isOwner(userId);
+        
+        // Los contactos de emergencia pueden leer el dispositivo
+        allow read: if isSignedIn() && 
+                       request.auth.uid in resource.data.get('emergencyContacts', []);
+        
+        // Permitir update solo si se está añadiendo al array de emergencyContacts
+        // (cuando un usuario acepta una solicitud de contacto)
+        allow update: if isSignedIn() && 
+                         // Verificar que solo se está modificando emergencyContacts
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts']);
+      }
+    }
+    
+    // Colección system (para OTA y configuración global)
+    match /system/{document=**} {
+      allow read: if isSignedIn();
+      allow write: if false; // Solo admin desde consola
+    }
+  }
+}

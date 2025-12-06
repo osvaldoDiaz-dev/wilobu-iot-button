@@ -1,16 +1,68 @@
-# wilobu_app
+# Wilobu App
 
-A new Flutter project.
+Aplicación móvil Flutter para el sistema Wilobu de alertas IoT.
 
-## Getting Started
+## Características
 
-This project is a starting point for a Flutter application.
+- 🔐 Autenticación con Firebase Auth
+- 📱 Gestión de dispositivos Wilobu
+- 👥 Contactos de emergencia con búsqueda por email
+- 🚨 Alertas SOS en tiempo real
+- 🗺️ Visualización de ubicación de emergencias
+- 🔵 Provisioning Bluetooth para nuevos dispositivos
 
-A few resources to get you started if this is your first Flutter project:
+## Requisitos
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- Flutter SDK 3.10+
+- Android SDK 21+
+- iOS 12+
+- Firebase configurado (google-services.json)
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Instalación
+
+```bash
+flutter pub get
+flutter run
+```
+
+## Arquitectura
+
+Proyecto organizado por features siguiendo Clean Architecture:
+
+```
+lib/
+├── features/
+│   ├── auth/          # Login y registro
+│   ├── contacts/      # Gestión de contactos
+│   ├── devices/       # CRUD de dispositivos
+│   ├── home/          # Dashboard principal
+│   └── sos/           # Sistema de alertas
+├── ble/               # Bluetooth Low Energy
+├── theme/             # Temas y estilos
+├── router.dart        # Navegación con GoRouter
+└── main.dart          # Entry point
+```
+
+## Providers (Riverpod)
+
+- `authProvider`: Estado de autenticación
+- `userDevicesStreamProvider`: Stream de dispositivos del usuario
+- `deviceContactsProvider`: Contactos de emergencia por dispositivo
+- `searchUserByEmailProvider`: Búsqueda de usuarios
+
+## Firebase
+
+- **Auth**: Autenticación email/password
+- **Firestore**: 
+  - `users/{uid}` - Perfiles de usuario
+  - `users/{uid}/devices/{deviceId}` - Dispositivos vinculados
+- **Cloud Functions**: Notificaciones FCM
+
+## Paquetes Principales
+
+- `flutter_riverpod` - State management
+- `go_router` - Navigation
+- `cloud_firestore` - Database
+- `firebase_auth` - Authentication
+- `flutter_blue_plus` - Bluetooth
+- `url_launcher` - External links

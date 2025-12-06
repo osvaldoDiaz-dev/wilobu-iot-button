@@ -19,9 +19,11 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        // antes: title: const Text('Wilobu – Acceso'),
         title: const Text('Wilobu – Registro'),
         centerTitle: true,
       ),
@@ -36,16 +38,48 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
+                  // Logo Wilobu
+                  Center(
+                    child: Container(
+                      width: 120,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: theme.brightness == Brightness.dark 
+                            ? Colors.white30 
+                            : Colors.grey.shade300,
+                          width: 2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: theme.brightness == Brightness.dark
+                              ? Colors.black26
+                              : Colors.grey.shade400,
+                            blurRadius: 10,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                        image: const DecorationImage(
+                          image: AssetImage('assets/images/wilobu_logo.png'),
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                   Text(
                     'Crear cuenta',
-                    style: Theme.of(context).textTheme.headlineSmall,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 8),
                   Text(
                     'Regístrate para administrar tus dispositivos Wilobu.',
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    style: theme.textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 24),
                   TextFormField(
@@ -65,7 +99,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                     },
                     onSaved: (value) => _email = value!.trim(),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 16),
                   TextFormField(
                     decoration: const InputDecoration(
                       labelText: 'Contraseña',
@@ -83,12 +117,13 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                     },
                     onSaved: (value) => _password = value!.trim(),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 32),
                   SizedBox(
+                    width: double.infinity,
                     height: 48,
-                    child: ElevatedButton(
+                    child: FilledButton(
                       onPressed: _submit,
-                      child: const Text('Registrarse'),
+                      child: const Text('Registrarse', style: TextStyle(fontSize: 16)),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -111,12 +146,22 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
     form.save();
 
     final auth = ref.read(firebaseAuthProvider);
+    final firestore = ref.read(firestoreProvider);
 
     try {
-      await auth.createUserWithEmailAndPassword(
+      // Crear usuario en Firebase Auth
+      final userCredential = await auth.createUserWithEmailAndPassword(
         email: _email,
         password: _password,
       );
+      
+      // Crear documento del usuario en Firestore con email
+      await firestore.collection('users').doc(userCredential.user!.uid).set({
+        'email': _email.toLowerCase().trim(),
+        'name': _email.split('@')[0], // Nombre por defecto
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+      
       if (!mounted) return;
       context.go('/home');
     } on FirebaseAuthException catch (e) {

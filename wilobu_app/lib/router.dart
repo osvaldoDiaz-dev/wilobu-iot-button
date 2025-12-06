@@ -9,6 +9,9 @@ import 'features/auth/presentation/login_page.dart';
 import 'features/auth/presentation/register_page.dart';
 import 'features/home/presentation/home_page.dart';
 import 'features/devices/presentation/add_device_page.dart';
+import 'features/devices/presentation/device_settings_view.dart';
+import 'features/contacts/presentation/contacts_page.dart';
+import 'features/sos/sos_alert_page.dart';
 
 /// Clase Helper para convertir un Stream (como authStateChanges)
 /// en un Listenable que GoRouter pueda escuchar para refrescar rutas.
@@ -41,23 +44,29 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
     // Lógica de protección de rutas
     redirect: (context, state) {
-      final user = auth.currentUser;
-      final isLoggedIn = user != null;
-      
-      final isLoggingIn = state.uri.path == '/login' || state.uri.path == '/register';
+      try {
+        final user = auth.currentUser;
+        final isLoggedIn = user != null;
+        
+        final isLoggingIn = state.uri.path == '/login' || state.uri.path == '/register';
 
-      // 1. Si NO está logueado y no está en login/register -> ir a Login
-      if (!isLoggedIn) {
-        return isLoggingIn ? null : '/login';
+        // 1. Si NO está logueado y no está en login/register -> ir a Login
+        if (!isLoggedIn) {
+          return isLoggingIn ? null : '/login';
+        }
+
+        // 2. Si SI está logueado y trata de ir a login/register -> ir a Home
+        if (isLoggingIn) {
+          return '/home';
+        }
+
+        // 3. En cualquier otro caso, dejar pasar
+        return null;
+      } catch (e) {
+        // Si Firebase falla, simplemente permitir acceso a la ruta
+        print('Error en redirect: $e');
+        return null;
       }
-
-      // 2. Si SI está logueado y trata de ir a login/register -> ir a Home
-      if (isLoggingIn) {
-        return '/home';
-      }
-
-      // 3. En cualquier otro caso, dejar pasar
-      return null;
     },
 
     routes: <RouteBase>[
@@ -76,6 +85,41 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/devices/add',
         builder: (context, state) => const AddDevicePage(),
+      ),
+      GoRoute(
+        path: '/devices/settings',
+        builder: (context, state) {
+          final deviceId = state.uri.queryParameters['deviceId'];
+          
+          if (deviceId == null) {
+            return Scaffold(
+              appBar: AppBar(title: const Text('Error')),
+              body: const Center(child: Text('ID de dispositivo requerido')),
+            );
+          }
+          
+          return DeviceSettingsView(deviceId: deviceId);
+        },
+      ),
+      GoRoute(
+        path: '/contacts',
+        builder: (context, state) => const ContactsPage(),
+      ),
+      GoRoute(
+        path: '/sos-alert',
+        builder: (context, state) {
+          final deviceId = state.uri.queryParameters['deviceId'];
+          final userId = state.uri.queryParameters['userId'];
+          
+          if (deviceId == null || userId == null) {
+            return Scaffold(
+              appBar: AppBar(title: const Text('Error')),
+              body: const Center(child: Text('Parámetros requeridos faltantes')),
+            );
+          }
+          
+          return SosAlertPage(deviceId: deviceId, userId: userId);
+        },
       ),
     ],
   );

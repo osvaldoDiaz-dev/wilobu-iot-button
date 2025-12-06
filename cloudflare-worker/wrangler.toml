@@ -1,0 +1,19 @@
+# Configuración de Cloudflare Worker para Wilobu
+
+name = "wilobu-proxy"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+# Ruta del Worker
+routes = [
+  { pattern = "wilobu-proxy.workers.dev/*", zone_name = "workers.dev" }
+]
+
+# Variables de entorno (opcional, también pueden ir en el código)
+[vars]
+FIREBASE_PROJECT_ID = "wilobu-d21b2"
+
+# Para desplegar:
+# 1. Instalar Wrangler: npm install -g wrangler
+# 2. Login: wrangler login
+# 3. Desplegar: wrangler deploy

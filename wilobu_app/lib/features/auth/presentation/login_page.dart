@@ -19,9 +19,13 @@ class _LoginPageState extends ConsumerState<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: const Text('Wilobu – Acceso'),
+        centerTitle: true,
       ),
       body: Center(
         child: ConstrainedBox(
@@ -33,14 +37,45 @@ class _LoginPageState extends ConsumerState<LoginPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
+                  // Logo Wilobu
+                  Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: theme.brightness == Brightness.dark 
+                          ? Colors.white30 
+                          : Colors.grey.shade300,
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: theme.brightness == Brightness.dark
+                            ? Colors.black26
+                            : Colors.grey.shade400,
+                          blurRadius: 10,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                      image: const DecorationImage(
+                        image: AssetImage('assets/images/wilobu_logo.png'),
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                   Text(
                     'Iniciar sesión',
-                    style: Theme.of(context).textTheme.headlineSmall,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 24),
                   TextFormField(
                     decoration: const InputDecoration(
                       labelText: 'Correo electrónico',
+                      prefixIcon: Icon(Icons.email_outlined),
                     ),
                     keyboardType: TextInputType.emailAddress,
                     validator: (value) {
@@ -54,10 +89,11 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     },
                     onSaved: (value) => _email = value!.trim(),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 16),
                   TextFormField(
                     decoration: const InputDecoration(
                       labelText: 'Contraseña',
+                      prefixIcon: Icon(Icons.lock_outline),
                     ),
                     obscureText: true,
                     validator: (value) {
@@ -71,14 +107,16 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     },
                     onSaved: (value) => _password = value!.trim(),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 32),
                   SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton(
+                    height: 48,
+                    child: FilledButton(
                       onPressed: _submit,
-                      child: const Text('Entrar'),
+                      child: const Text('Entrar', style: TextStyle(fontSize: 16)),
                     ),
                   ),
+                  const SizedBox(height: 8),
                   TextButton(
                     onPressed: () => context.go('/register'),
                     child: const Text('¿No tienes cuenta? Crear una'),
@@ -98,12 +136,26 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     form.save();
 
     final auth = ref.read(firebaseAuthProvider);
+    final firestore = ref.read(firestoreProvider);
 
     try {
-      await auth.signInWithEmailAndPassword(
+      final userCredential = await auth.signInWithEmailAndPassword(
         email: _email,
         password: _password,
       );
+      
+      // Verificar si el documento del usuario existe, si no, crearlo
+      final userDoc = firestore.collection('users').doc(userCredential.user!.uid);
+      final snapshot = await userDoc.get();
+      
+      if (!snapshot.exists) {
+        await userDoc.set({
+          'email': _email.toLowerCase().trim(),
+          'name': _email.split('@')[0],
+          'createdAt': DateTime.now().toIso8601String(),
+        });
+      }
+      
       if (!mounted) return;
       context.go('/home');
     } on FirebaseAuthException catch (e) {
