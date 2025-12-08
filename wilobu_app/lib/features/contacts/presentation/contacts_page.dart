@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wilobu_app/firebase_providers.dart';
 import 'package:wilobu_app/theme/app_theme.dart';
+import 'dart:async';
 
 // ============================================================================
 // MODELOS
@@ -744,20 +745,26 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
   Map<String, dynamic>? _selectedUser;
   List<Map<String, dynamic>> _userDevices = [];
   List<Map<String, dynamic>> _searchResults = [];
+  Timer? _searchDebounce;
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _usernameController.dispose();
     super.dispose();
   }
 
   Future<void> _searchUsers(String query) async {
     if (query.isEmpty) {
-      setState(() => _searchResults = []);
+      if (mounted) {
+        setState(() => _searchResults = []);
+      }
       return;
     }
 
-    setState(() => _searching = true);
+    if (mounted) {
+      setState(() => _searching = true);
+    }
 
     try {
       final firestore = ref.read(firestoreProvider);
@@ -765,39 +772,55 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
       final currentUser = auth.currentUser;
       if (currentUser == null) throw Exception('No autenticado');
 
-      // Búsqueda por displayName con startAt y endAt para búsqueda parcial
+      // Búsqueda por displayName - obtener más usuarios y filtrar en cliente
       final lowerQuery = query.toLowerCase();
+      print('[SEARCH] Buscando: "$query" (lowercase: "$lowerQuery")');
+      
       final usersQuery = await firestore
           .collection('users')
-          .orderBy('displayName')
-          .startAt([lowerQuery])
-          .endAt([lowerQuery + '\uf8ff'])
-          .limit(10)
+          .limit(50)  // Get more users to filter on client side
           .get();
+      
+      print('[SEARCH] Obtenidos ${usersQuery.docs.length} usuarios');
       
       final results = <Map<String, dynamic>>[];
       for (var doc in usersQuery.docs) {
         // No mostrar al usuario actual en los resultados
         if (doc.id != currentUser.uid) {
-          results.add({'uid': doc.id, ...doc.data()});
+          final userData = doc.data();
+          final displayName = (userData['displayName'] as String? ?? '').toLowerCase();
+          final email = (userData['email'] as String? ?? '').toLowerCase();
+          final username = (userData['username'] as String? ?? '').toLowerCase();
+          
+          // Filter by partial match in displayName, email, or username
+          if (displayName.contains(lowerQuery) || 
+              email.contains(lowerQuery) ||
+              username.contains(lowerQuery)) {
+            print('[SEARCH] Coincidencia: ${userData['displayName'] ?? userData['email']} (uid: ${doc.id})');
+            results.add({'uid': doc.id, ...userData});
+          }
         }
       }
 
-      setState(() => _searchResults = results);
+      if (mounted) {
+        setState(() => _searchResults = results);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error en búsqueda: $e'), backgroundColor: Colors.red),
         );
+        setState(() => _searchResults = []);
       }
-      setState(() => _searchResults = []);
     } finally {
       if (mounted) setState(() => _searching = false);
     }
   }
 
   Future<void> _selectUser(Map<String, dynamic> user) async {
-    setState(() => _selectedUser = user);
+    if (mounted) {
+      setState(() => _selectedUser = user);
+    }
 
     try {
       final firestore = ref.read(firestoreProvider);
@@ -906,24 +929,26 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
         // Campo de búsqueda con Autocomplete
         Autocomplete<Map<String, dynamic>>(
           optionsBuilder: (TextEditingValue textEditingValue) {
-            if (textEditingValue.text.isEmpty) return const Iterable<Map<String, dynamic>>.empty();
-            return _searchResults.where((user) =>
-              (user['displayName'] as String? ?? '').toLowerCase().contains(textEditingValue.text.toLowerCase())
-            );
+            // Return the search results directly
+            return _searchResults;
           },
           displayStringForOption: (option) => option['displayName'] ?? 'Usuario',
           fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
-            // Sincronizar el texto
-            textEditingController.text = _usernameController.text;
-            textEditingController.addListener(() {
-              _usernameController.text = textEditingController.text;
-              _searchUsers(textEditingController.text);
-            });
-            
             return TextField(
               controller: textEditingController,
               focusNode: focusNode,
-              onChanged: (value) => _searchUsers(value),
+              onChanged: (value) {
+                // Cancel previous search
+                _searchDebounce?.cancel();
+                
+                // Debounce the search to avoid too many Firestore queries
+                _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+                  if (mounted) {
+                    _usernameController.text = value;
+                    _searchUsers(value);
+                  }
+                });
+              },
               decoration: InputDecoration(
                 labelText: 'Nombre de usuario',
                 hintText: 'Busca por nombre...',
@@ -994,7 +1019,7 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
         ),
         
         // Resultado de búsqueda
-        if (_selectedUser != null) ..[
+        if (_selectedUser != null) ...[
           const SizedBox(height: 32),
           
           Card(
