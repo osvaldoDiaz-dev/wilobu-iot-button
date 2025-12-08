@@ -47,6 +47,35 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
             }
         }
         
+        // Referencia a documento del dispositivo
+        const deviceRef = admin.firestore()
+            .collection('users').doc(ownerUid)
+            .collection('devices').doc(deviceId);
+
+        const deviceDoc = await deviceRef.get();
+
+        // Bloquear re-provisión silenciosa: si no existe, solicitar reset
+        if (!deviceDoc.exists) {
+            console.warn(`[HEARTBEAT] ${deviceId} no existe -> devolver 404 y cmd_reset`);
+            return res.status(404).json({ success: false, cmd_reset: true, error: 'device_not_found' });
+        }
+
+        const current = deviceDoc.data() || {};
+
+        // Si el owner no coincide, forzar reset
+        if (current.ownerUid && current.ownerUid !== ownerUid) {
+            console.warn(`[HEARTBEAT] owner mismatch doc=${current.ownerUid} req=${ownerUid}`);
+            return res.status(401).json({ success: false, cmd_reset: true, error: 'owner_mismatch' });
+        }
+
+        // Si está marcado como desprovisionado, forzar reset
+        if (current.provisioned === false) {
+            console.warn(`[HEARTBEAT] ${deviceId} marcado desprovisionado -> 410`);
+            return res.status(410).json({ success: false, cmd_reset: true, error: 'device_deprovisioned' });
+        }
+
+        const cmdReset = current.cmd_reset === true;
+
         // Construir update
         const update = {
             status: status || 'online',
@@ -61,26 +90,9 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
             };
         }
         
-        // Leer documento actual para verificar cmd_reset
-        const deviceRef = admin.firestore()
-            .collection('users').doc(ownerUid)
-            .collection('devices').doc(deviceId);
-        
-        const deviceDoc = await deviceRef.get();
-        const cmdReset = deviceDoc.exists ? deviceDoc.data().cmd_reset === true : false;
-        
-        // Si el documento no existe, crearlo con datos iniciales
-        if (!deviceDoc.exists) {
-            update.deviceId = deviceId;
-            update.ownerUid = ownerUid;
-            update.createdAt = admin.firestore.FieldValue.serverTimestamp();
-            await deviceRef.set(update);
-            console.log(`[HEARTBEAT] ✓ ${deviceId} created (new device)`);
-        } else {
-            // Actualizar documento existente
-            await deviceRef.update(update);
-            console.log(`[HEARTBEAT] ✓ ${deviceId} updated`);
-        }
+        // Actualizar documento existente
+        await deviceRef.update(update);
+        console.log(`[HEARTBEAT] ✓ ${deviceId} updated`);
         
         // Responder con cmd_reset si está activo
         return res.status(200).json({ success: true, cmd_reset: cmdReset });
@@ -673,5 +685,45 @@ exports.addTestUserAsContact = functions.https.onRequest(async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 });
+
+// ===== CLOUD FUNCTION: CLEANUP UNPROVISIONNED DEVICES (Scheduled) =====
+/**
+ * Se ejecuta diariamente para limpiar dispositivos que se han desaprovisionado
+ * y no han hecho heartbeat en 24 horas (presuntamente ya hicieron reset)
+ */
+exports.cleanupUnprovisionedDevices = functions.pubsub
+    .schedule('every 24 hours')
+    .onRun(async (context) => {
+        try {
+            const now = new Date();
+            const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            let totalDeleted = 0;
+            
+            // Iterar todos los usuarios
+            const usersSnapshot = await admin.firestore().collection('users').get();
+            
+            for (const userDoc of usersSnapshot.docs) {
+                // Buscar dispositivos no aprovisionados y con reset_requested_at > 24h
+                const devicesSnapshot = await userDoc.ref.collection('devices')
+                    .where('provisioned', '==', false)
+                    .where('reset_requested_at', '<', oneDayAgo)
+                    .get();
+                
+                for (const deviceDoc of devicesSnapshot.docs) {
+                    await deviceDoc.ref.delete();
+                    totalDeleted++;
+                    console.log(`[CLEANUP] Eliminado: ${userDoc.id}/${deviceDoc.id}`);
+                }
+            }
+            
+            console.log(`[CLEANUP] Total dispositivos eliminados: ${totalDeleted}`);
+            return { success: true, deleted: totalDeleted };
+            
+        } catch (error) {
+            console.error('[CLEANUP] Error:', error);
+            return { error: error.message };
+        }
+    });
 
 module.exports = module.exports;

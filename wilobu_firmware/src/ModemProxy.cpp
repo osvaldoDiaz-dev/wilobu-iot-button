@@ -19,11 +19,28 @@ String ModemProxy::sendATCommand(const String& cmd, unsigned long timeout) {
     
     String r = "";
     unsigned long start = millis();
+    bool hasContent = false;
+    
     while (millis() - start < timeout) {
-        if (modemSerial->available()) {
+        while (modemSerial->available()) {
             char c = (char)modemSerial->read();
             r += c;
+            hasContent = true;
         }
+        
+        // Terminar early si detectamos OK, ERROR, o DOWNLOAD
+        if (hasContent) {
+            if (r.indexOf("OK\r\n") != -1 || r.indexOf("ERROR\r\n") != -1 || 
+                r.indexOf("DOWNLOAD") != -1 || r.indexOf("+HTTPACTION") != -1) {
+                delay(50); // Pequeño delay para capturar cualquier dato restante
+                while (modemSerial->available()) {
+                    r += (char)modemSerial->read();
+                }
+                break;
+            }
+        }
+        
+        delay(10); // Pequeño delay para no saturar el CPU
     }
     
     if (r.length() > 0) {
@@ -63,7 +80,44 @@ bool ModemProxy::init() {
     
     sendATCommand("ATE0", 1000);
     sendATCommand("AT+CMGF=1", 1000);
-    sendATCommand("AT+CGDCONT=1,\"IP\",\"" + String(apn) + "\"", 2000);
+    
+    // Intentar configurar contexto GPRS con el APN proporcionado
+    String setupResponse = sendATCommand("AT+CGDCONT=1,\"IP\",\"" + String(apn) + "\"", 2000);
+    
+    // Si el APN es vacio o falla, intentar APNs universales como fallback
+    if (apn.length() == 0 || setupResponse.indexOf("ERROR") != -1) {
+        Serial.println("[MODEM] APN vacio o fallo. Intentando APNs universales...");
+        
+        // Array de APNs universales para fallback
+        const char* fallbackAPNs[] = {
+            "web.gprsuniversal",  // Vodafone universal (International)
+            "hologram",            // Hologram oficial
+            "internet",            // Genérico común
+            "m2m.com.aero"        // Aero (fallback)
+        };
+        
+        bool apnConfigured = false;
+        for (int i = 0; i < 4; i++) {
+            String apnResponse = sendATCommand("AT+CGDCONT=1,\"IP\",\"" + String(fallbackAPNs[i]) + "\"", 2000);
+            if (apnResponse.indexOf("OK") != -1) {
+                apn = String(fallbackAPNs[i]);
+                Serial.print("[MODEM] APN fallback OK: ");
+                Serial.println(apn);
+                apnConfigured = true;
+                break;
+            }
+        }
+        
+        if (!apnConfigured) {
+            // Si ninguno funciona, usar el primero
+            apn = String("web.gprsuniversal");
+            Serial.println("[MODEM] Usando APN por defecto: web.gprsuniversal");
+        }
+    } else {
+        Serial.print("[MODEM] APN configurado: ");
+        Serial.println(apn);
+    }
+    
     sendATCommand("AT+CGACT=1,1", 10000);
     
     Serial.println("[MODEM] A7670SA inicializado");
@@ -95,6 +149,7 @@ bool ModemProxy::isConnected() { return connected; }
 String ModemProxy::httpPost(const String& path, const String& json) {
     if (!connected) {
         Serial.println("[HTTP] Error: No conectado");
+        lastHttpStatus = -1;
         return "";
     }
     
@@ -104,15 +159,42 @@ String ModemProxy::httpPost(const String& path, const String& json) {
         return "";
     }
     
-    String httpUrl = "http://" + String(proxyUrl) + path;
-    String httpsUrl = "https://" + String(proxyUrl) + path;
+    // Detectar si path es una URL completa (https:// o http://)
+    String httpUrl, httpsUrl;
+    if (path.startsWith("http://") || path.startsWith("https://")) {
+        // path ya es URL completa, usarla directamente
+        httpUrl = path.startsWith("https://") ? path : path;
+        httpsUrl = path.startsWith("https://") ? path : "https://" + String(proxyUrl) + path;
+    } else {
+        // path es relativo, agregar proxy
+        httpUrl = "http://" + String(proxyUrl) + path;
+        httpsUrl = "https://" + String(proxyUrl) + path;
+    }
+    
     Serial.print("[HTTP] POST -> "); Serial.println(httpUrl);
 
-    // Basic HTTP parameters: use PDP context CID=1 and allow redirects
-    sendATCommand("AT+HTTPPARA=\"CID\",1", 1000);
-    sendATCommand("AT+HTTPPARA=\"REDIR\",1", 1000);
-    sendATCommand("AT+HTTPPARA=\"UA\",\"Wilobu/1.0\"", 1000);
-    sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", 1000);
+    // Basic HTTP parameters: CID es opcional, solo si el modem lo soporta
+    // CID puede fallar en algunos firmwares; intentar 1 y luego 0
+    String cidResp = sendATCommand("AT+HTTPPARA=\"CID\",1", 1000);
+    if (cidResp.indexOf("ERROR") != -1) {
+        Serial.println("[HTTP] CID=1 fallo, probando CID=0");
+        cidResp = sendATCommand("AT+HTTPPARA=\"CID\",0", 1000);
+        if (cidResp.indexOf("ERROR") != -1) {
+            Serial.println("[HTTP] CID no soportado en este modem, continuando sin CID...");
+            // Continuar sin CID; algunos modems A7670SA lo ignoran
+        }
+    }
+
+    // Parámetros opcionales: si fallan, continuar pero registrar
+    if (sendATCommand("AT+HTTPPARA=\"REDIR\",1", 1000).indexOf("ERROR") != -1) {
+        Serial.println("[HTTP] Aviso: REDIR no soportado");
+    }
+    if (sendATCommand("AT+HTTPPARA=\"UA\",\"Wilobu/1.0\"", 1000).indexOf("ERROR") != -1) {
+        Serial.println("[HTTP] Aviso: UA no soportado");
+    }
+    if (sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", 1000).indexOf("ERROR") != -1) {
+        Serial.println("[HTTP] Error: CONTENT no aceptado");
+    }
 
     String url = httpUrl;
     String dataCmd = "AT+HTTPDATA=" + String(json.length()) + ",10000";
@@ -126,14 +208,39 @@ retry_http:
     dataResp = sendATCommand(dataCmd, 2000);
     if (dataResp.indexOf("DOWNLOAD") == -1) {
         Serial.println("[HTTP] Error: HTTPDATA no acepto datos");
+        Serial.print("[HTTP] HTTPDATA response: "); Serial.println(dataResp);
         sendATCommand("AT+HTTPTERM", 1000);
+        lastHttpStatus = -1;
         return "";
     }
 
+    Serial.print("[HTTP] Payload size: "); Serial.println(json.length());
     modemSerial->println(json);
     delay(1000);
 
-    String action = sendATCommand("AT+HTTPACTION=1", 15000);
+    // HTTPACTION devuelve OK inmediatamente, pero +HTTPACTION llega después
+    sendATCommand("AT+HTTPACTION=1", 2000);
+    
+    // Esperar específicamente por +HTTPACTION (puede tardar varios segundos)
+    Serial.println("[HTTP] Esperando +HTTPACTION...");
+    String action = "";
+    unsigned long start = millis();
+    while (millis() - start < 20000) {  // 20 segundos max
+        while (modemSerial->available()) {
+            char c = (char)modemSerial->read();
+            action += c;
+        }
+        
+        if (action.indexOf("+HTTPACTION:") != -1) {
+            delay(100); // Pequeño delay para capturar el resto
+            while (modemSerial->available()) {
+                action += (char)modemSerial->read();
+            }
+            break;
+        }
+        delay(50);
+    }
+    
     Serial.print("[HTTP] Response: "); Serial.println(action);
 
     // Parse +HTTPACTION: <method>,<status>,<len>
@@ -153,6 +260,9 @@ retry_http:
         }
     }
 
+    // Registrar status para diagnóstico y resets
+    lastHttpStatus = httpStatus;
+
     // If not 2xx, try HTTPS fallback once
     if (httpStatus < 200 || httpStatus >= 300) {
         Serial.println("[HTTP] Error: Status not 2xx");
@@ -160,18 +270,28 @@ retry_http:
 
         // Try to read any body for diagnostics
         String body = sendATCommand("AT+HTTPREAD", 3000);
+        lastHttpBody = body;
         if (body.length() > 0) {
             Serial.print("[HTTP] Body on error: "); Serial.println(body);
         }
 
-        // Persist diagnostics in NVS for later inspection
+        // Persist diagnostics in NVS for later inspection (muy truncado para evitar KEY_TOO_LONG)
         {
             Preferences prefs;
             prefs.begin("wilobu", false);
-            prefs.putString("last_http_action", action);
-            prefs.putString("last_http_read", body);
-            prefs.putString("last_http_status", String(httpStatus));
+            // Limitar a 64 chars por clave
+            String statusStr = String(httpStatus);
+            if (statusStr.length() > 64) statusStr = statusStr.substring(0, 64);
+            prefs.putString("http_status", statusStr);
             prefs.end();
+        }
+
+        // ⚠️ CRITICAL: Don't retry if this is a deprovision code (404/410/401)
+        // These codes indicate the device was removed from Firestore and should factory reset
+        if (httpStatus == 404 || httpStatus == 410 || httpStatus == 401) {
+            Serial.println("[HTTP] ⚠️ Código de desaprovisionamiento detectado - NO intentar fallback");
+            sendATCommand("AT+HTTPTERM", 1000);
+            return ""; // Return empty string, but lastHttpStatus is already set to the deprovision code
         }
 
         if (!triedHttps) {
@@ -194,13 +314,14 @@ retry_http:
     }
 
     String response = sendATCommand("AT+HTTPREAD", 3000);
-    // Save successful request diagnostics
+    lastHttpBody = response;
+    // Save successful request diagnostics (muy truncado para evitar KEY_TOO_LONG)
     {
         Preferences prefs;
         prefs.begin("wilobu", false);
-        prefs.putString("last_http_action", action);
-        prefs.putString("last_http_read", response);
-        prefs.putString("last_http_status", String(httpStatus));
+        String statusStr = String(httpStatus);
+        if (statusStr.length() > 64) statusStr = statusStr.substring(0, 64);
+        prefs.putString("http_status", statusStr);
         prefs.end();
     }
     sendATCommand("AT+HTTPTERM", 1000);
@@ -238,31 +359,31 @@ bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, c
         doc["lastLocation"]["accuracy"] = loc.accuracy;
     }
     String json; serializeJson(doc, json);
-    String response = httpPost("/heartbeat", json);
-    if (response.isEmpty()) {
-        Serial.println("[HEARTBEAT] Error: respuesta vacía. Recuperando diagnósticos NVS...");
-        Preferences prefs;
-        prefs.begin("wilobu", true); // read-only
-        String action = prefs.getString("last_http_action", "");
-        String read = prefs.getString("last_http_read", "");
-        String status = prefs.getString("last_http_status", "");
-        prefs.end();
-
-        if (action.length() > 0) {
-            Serial.print("[HEARTBEAT DIAG] last_http_action: "); Serial.println(action);
-        }
-        if (status.length() > 0) {
-            Serial.print("[HEARTBEAT DIAG] last_http_status: "); Serial.println(status);
-        }
-        if (read.length() > 0) {
-            Serial.print("[HEARTBEAT DIAG] last_http_read: "); Serial.println(read);
-        }
-
+    // Enviar HTTPS directo a Cloud Function, saltando proxy Cloudflare
+    String response = httpPost("https://us-central1-wilobu-d21b2.cloudfunctions.net/heartbeat", json);
+    
+    // Detectar cmd_reset por código HTTP (404=no existe, 410=desprovisionado, 401=owner mismatch)
+    // El Cloud Function devuelve estos códigos cuando el dispositivo debe resetearse
+    int status = getLastHttpStatus();
+    Serial.print("[HEARTBEAT] Status HTTP recibido: ");
+    Serial.println(status);
+    
+    if (status == 404 || status == 410 || status == 401) {
+        Serial.print("[HEARTBEAT] ⚠️ Código de desaprovisionamiento detectado: ");
+        Serial.println(status);
+        Serial.println("[HEARTBEAT] Iniciando Factory Reset...");
+        factoryResetPending = true;
         return false;
     }
-    // Check for cmd_reset in response
+    
+    if (response.isEmpty()) {
+        Serial.println("[HEARTBEAT] Error: respuesta vacía");
+        return false;
+    }
+    
+    // Fallback: también verificar cmd_reset en body si se pudo leer
     if (response.indexOf("\"cmd_reset\":true") != -1) {
-        Serial.println("[HEARTBEAT] ⚠️ cmd_reset detectado - Factory Reset");
+        Serial.println("[HEARTBEAT] ⚠️ cmd_reset detectado en body - Factory Reset");
         factoryResetPending = true;
     }
     return true;
@@ -271,16 +392,28 @@ bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, c
 // ===== GPS =====
 bool ModemProxy::initGNSS() {
     if (gpsEnabled) return true;
+
+    // Backoff si ya falló recientemente
+    if (millis() < nextGnssRetryMs) {
+        return false;
+    }
+
     // Try several common GNSS enable commands for different modules
     const char* cmds[] = { "AT+CGPS=1,1", "AT+CGNSPWR=1", "AT+QGPS=1" };
     for (int i = 0; i < (int)(sizeof(cmds)/sizeof(cmds[0])); ++i) {
         String r = sendATCommand(String(cmds[i]), 5000);
         if (r.indexOf("OK") != -1) {
             gpsEnabled = true;
+            gnssFailCount = 0;
+            nextGnssRetryMs = millis();
             return true;
         }
     }
     gpsEnabled = false;
+    gnssFailCount++;
+    // Backoff progresivo: 5s, 30s, 5min
+    unsigned long delayMs = (gnssFailCount == 1) ? 5000UL : (gnssFailCount == 2 ? 30000UL : 300000UL);
+    nextGnssRetryMs = millis() + delayMs;
     return false;
 }
 

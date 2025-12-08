@@ -1,4 +1,4 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,9 +38,9 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
     final result = <ViewerDevice>[];
     for (final doc in snapshot.docs) {
       final data = doc.data();
-      final viewers = data['viewers'] as List<dynamic>?;
-      if (viewers == null) continue;
-      final isViewer = viewers.any((v) => v is Map && v['uid'] == user.uid);
+      final viewerUids = data['viewerUids'] as List<dynamic>?;
+      if (viewerUids == null) continue;
+      final isViewer = viewerUids.contains(user.uid);
       if (!isViewer) continue;
       final ownerUid = data['ownerUid'] as String? ?? '';
       final ownerName = data['ownerName'] as String? ?? 'Usuario';
@@ -55,14 +55,41 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
       ));
     }
     return result;
+  }).handleError((error) {
+    print('[viewerDevicesProvider] Error: $error');
+    return <ViewerDevice>[];
   });
 });
 
-// ...existing code...
+// Card genérica para dispositivos (viewer o contacto)
+class _DeviceListCard extends StatefulWidget {
+  final String title;
+  final String subtitle;
+  final String? deviceId;
+  final bool isOnline;
+  final int? battery;
+  final DateTime? lastSeen;
+  final double? lat;
+  final double? lng;
 
-class _ViewerDeviceCard extends StatelessWidget {
-  final ViewerDevice device;
-  const _ViewerDeviceCard({required this.device});
+  const _DeviceListCard({
+    required this.title,
+    required this.subtitle,
+    this.deviceId,
+    required this.isOnline,
+    this.battery,
+    this.lastSeen,
+    this.lat,
+    this.lng,
+  });
+
+  @override
+  State<_DeviceListCard> createState() => _DeviceListCardState();
+}
+
+class _DeviceListCardState extends State<_DeviceListCard> {
+  bool _isExpanded = false;
+
   String _timeAgo(DateTime? dt) {
     if (dt == null) return 'Sin datos';
     final diff = DateTime.now().difference(dt);
@@ -71,28 +98,96 @@ class _ViewerDeviceCard extends StatelessWidget {
     if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
     return 'Hace ${diff.inDays} dias';
   }
+
+  Future<void> _openInMaps() async {
+    if (widget.lat == null || widget.lng == null) return;
+    final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${widget.lat},${widget.lng}');
+    if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasLocation = widget.lat != null && widget.lng != null;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: const Icon(Icons.visibility, color: Colors.blue),
-        title: Text(device.nickname ?? device.deviceId, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text('Dueño: ${device.ownerName}\nEstado: ${device.status}\nÚltima conexión: ${_timeAgo(device.lastSeen)}'),
-        trailing: device.battery != null ? Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(device.battery! < 20 ? Icons.battery_alert : Icons.battery_full, size: 16,
-            color: device.battery! < 20 ? Colors.red : Colors.green),
-          const SizedBox(width: 4),
-          Text('${device.battery}%', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
-            color: device.battery! < 20 ? Colors.red : Colors.green)),
-        ]) : null,
-      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: [
+        InkWell(
+          onTap: () => setState(() => _isExpanded = !_isExpanded),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: widget.isOnline ? Colors.green.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.watch,
+                  color: widget.isOnline ? Colors.green : Colors.grey, size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text(widget.subtitle, style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant)),
+                ]),
+              ),
+              if (widget.battery != null) Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: widget.battery! < 20 ? Colors.red.withOpacity(0.1) : Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(widget.battery! < 20 ? Icons.battery_alert : Icons.battery_full, size: 16,
+                    color: widget.battery! < 20 ? Colors.red : Colors.green),
+                  const SizedBox(width: 4),
+                  Text('${widget.battery}%', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
+                    color: widget.battery! < 20 ? Colors.red : Colors.green)),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              Icon(_isExpanded ? Icons.expand_less : Icons.expand_more),
+            ]),
+          ),
+        ),
+        if (_isExpanded) ...[
+          const Divider(height: 1),
+          if (hasLocation) SizedBox(height: 180, child: Stack(children: [
+            FlutterMap(
+              options: MapOptions(initialCenter: LatLng(widget.lat!, widget.lng!), initialZoom: 15,
+                interactionOptions: const InteractionOptions(flags: InteractiveFlag.none)),
+              children: [
+                TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.wilobu_app'),
+                MarkerLayer(markers: [Marker(point: LatLng(widget.lat!, widget.lng!),
+                  child: const Icon(Icons.location_pin, color: Colors.red, size: 40))]),
+              ],
+            ),
+            Positioned(right: 8, bottom: 8, child: FloatingActionButton.small(
+              heroTag: 'map_${widget.deviceId}', onPressed: _openInMaps, child: const Icon(Icons.open_in_new, size: 18))),
+          ]))
+          else Container(height: 100, color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
+            child: const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.location_off, size: 32, color: Colors.grey),
+              SizedBox(height: 4),
+              Text('Ubicación no disponible', style: TextStyle(color: Colors.grey)),
+            ]))),
+          Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+            if (widget.deviceId != null) ...[
+              Row(children: [
+                Expanded(child: _InfoTile(icon: Icons.qr_code, label: 'ID', value: widget.deviceId!)),
+                Expanded(child: _InfoTile(icon: Icons.access_time, label: 'Última conexión', value: _timeAgo(widget.lastSeen))),
+              ]),
+            ],
+          ])),
+        ],
+      ]),
     );
   }
 }
-// ===== MODELO DE VIEWER =====
-// ...existing code...
-// ...existing code...
 
 // ===== MODELO DE DISPOSITIVO =====
 class WilobuDevice {
@@ -272,6 +367,9 @@ final monitoringContactsProvider = StreamProvider.autoDispose<List<MonitoringCon
       ));
     }
     return contacts;
+  }).handleError((error) {
+    print('[monitoringContactsProvider] Error: $error');
+    return <MonitoringContact>[];
   });
 });
 
@@ -284,9 +382,12 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
+  late GlobalKey<ScaffoldState> _scaffoldKey;
+
   @override
   void initState() {
     super.initState();
+    _scaffoldKey = GlobalKey<ScaffoldState>();
     // Mostrar mensaje de bienvenida si es nuevo registro
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final justRegistered = ref.read(justRegisteredProvider);
@@ -307,8 +408,8 @@ class _HomePageState extends ConsumerState<HomePage> {
   Widget build(BuildContext context) {
     final user = ref.watch(firebaseAuthProvider).currentUser;
     final devices = ref.watch(devicesProvider);
-    final contacts = ref.watch(monitoringContactsProvider);
-    final viewerDevices = ref.watch(viewerDevicesProvider);
+    final themeMode = ref.watch(themeControllerProvider);
+    final background = AppTheme.buildWilobuBackground(themeMode);
 
     ref.listen(devicesProvider, (_, next) {
       next.whenData((list) {
@@ -317,10 +418,12 @@ class _HomePageState extends ConsumerState<HomePage> {
       });
     });
 
-    return WilobuScaffold(
+    return Scaffold(
+      key: _scaffoldKey,
+      extendBodyBehindAppBar: background != null,
       appBar: AppBar(
         title: const Text('Wilobu'),
-        backgroundColor: Colors.transparent,
+        backgroundColor: background != null ? Colors.transparent : null,
         elevation: 0,
         actions: [
           Consumer(builder: (_, ref, __) {
@@ -332,38 +435,138 @@ class _HomePageState extends ConsumerState<HomePage> {
             };
             return IconButton(
               icon: Icon(icon),
-              tooltip: 'Tema: ${theme.name}',
+              tooltip: 'Tema',
               onPressed: () => ref.read(themeControllerProvider.notifier).cycleTheme(),
             );
           }),
-          IconButton(icon: const Icon(Icons.notifications), onPressed: () => context.push('/alerts')),
+          IconButton(icon: const Icon(Icons.notifications), tooltip: 'Alertas', onPressed: () => context.push('/alerts')),
           Consumer(builder: (_, ref, __) {
             final requests = ref.watch(contactRequestsProvider);
             return IconButton(
               icon: Badge(
                 isLabelVisible: requests.valueOrNull?.isNotEmpty ?? false,
                 label: Text('${requests.valueOrNull?.length ?? 0}'),
-                child: const Icon(Icons.person_add),
+                child: const Icon(Icons.menu),
               ),
-              onPressed: () => context.push('/contacts'),
+              tooltip: 'Menú',
+              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
             );
           }),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () { ref.read(firebaseAuthProvider).signOut(); context.go('/login'); },
-          ),
         ],
+      ),
+      endDrawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(
+                color: Theme.of(context).appBarTheme.backgroundColor ?? Theme.of(context).colorScheme.surface,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 4,
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Icon(
+                    Icons.account_circle,
+                    size: 40,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    user?.email ?? 'Usuario',
+                    style: TextStyle(
+                      color: Theme.of(context).textTheme.bodyLarge?.color,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: Icon(Icons.person, color: Theme.of(context).colorScheme.primary),
+              title: const Text('Mi Perfil'),
+              onTap: () { Navigator.pop(context); context.push('/profile'); },
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              visualDensity: VisualDensity.compact,
+            ),
+            const SizedBox(height: 4),
+            ListTile(
+              leading: Icon(Icons.people, color: Theme.of(context).colorScheme.primary),
+              title: const Text('Contactos'),
+              onTap: () { Navigator.pop(context); context.push('/contacts'); },
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              visualDensity: VisualDensity.compact,
+            ),
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Divider(),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              leading: const Icon(Icons.logout, color: Colors.red),
+              title: const Text('Cerrar Sesión', style: TextStyle(color: Colors.red, fontWeight: FontWeight.w500)),
+              onTap: () { 
+                Navigator.pop(context);
+                ref.read(firebaseAuthProvider).signOut();
+                context.go('/login');
+              },
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => context.push('/devices/add'),
         icon: const Icon(Icons.add),
         label: const Text('Vincular'),
       ),
-      body: RefreshIndicator(
-        onRefresh: () async { ref.invalidate(devicesProvider); ref.invalidate(monitoringContactsProvider); },
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
+      body: Stack(
+        children: [
+          if (background != null) background,
+          SafeArea(
+            child: RefreshIndicator(
+              onRefresh: () async { ref.invalidate(devicesProvider); ref.invalidate(monitoringContactsProvider); },
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  // Estadísticas rápidas
+                Consumer(builder: (context, ref, _) {
+              final myDevices = ref.watch(devicesProvider);
+              final viewers = ref.watch(viewerDevicesProvider);
+              final contacts = ref.watch(monitoringContactsProvider);
+              
+              return Row(
+                children: [
+                  Expanded(
+                    child: _StatsCard(
+                      icon: Icons.watch,
+                      label: 'Mis dispositivos',
+                      count: myDevices.valueOrNull?.length ?? 0,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _StatsCard(
+                      icon: Icons.visibility,
+                      label: 'Monitoreando',
+                      count: (contacts.valueOrNull?.length ?? 0) + (viewers.valueOrNull?.length ?? 0),
+                    ),
+                  ),
+                ],
+              );
+            }),
+            const SizedBox(height: 24),
             _SectionHeader(icon: Icons.watch, title: 'Mi Dispositivo'),
             const SizedBox(height: 8),
             devices.when(
@@ -376,32 +579,98 @@ class _HomePageState extends ConsumerState<HomePage> {
               error: (e, _) => Center(child: Text('Error: $e')),
             ),
             const SizedBox(height: 24),
-            _SectionHeader(icon: Icons.visibility, title: 'Tienes acceso como viewer', subtitle: 'Dispositivos que puedes ver pero no controlar'),
+            _SectionHeader(icon: Icons.visibility, title: 'Otros Dispositivos', subtitle: 'Dispositivos que puedes monitorear'),
             const SizedBox(height: 8),
-            viewerDevices.when(
-              data: (list) => list.isEmpty
-                ? _EmptyState(icon: Icons.visibility_off, message: 'No tienes acceso como viewer a ningún dispositivo')
-                : Column(children: list.map((v) => _ViewerDeviceCard(device: v)).toList()),
-              loading: () => const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator())),
-              error: (e, _) => Center(child: Text('Error: $e')),
+            Consumer(builder: (context, ref, _) {
+              final viewers = ref.watch(viewerDevicesProvider);
+              final contacts = ref.watch(monitoringContactsProvider);
+              return viewers.when(
+                data: (viewerList) => contacts.when(
+                  data: (contactList) {
+                    final allDevices = [
+                      ...viewerList.map((v) => _DeviceListCard(
+                        title: v.nickname ?? v.deviceId,
+                        subtitle: 'Dueño: ${v.ownerName}',
+                        deviceId: v.deviceId,
+                        isOnline: v.status == 'online',
+                        battery: v.battery,
+                        lastSeen: v.lastSeen,
+                      )),
+                      ...contactList.map((c) => _DeviceListCard(
+                        title: c.formattedName,
+                        subtitle: c.formattedUsername,
+                        deviceId: c.deviceId,
+                        isOnline: c.isOnline,
+                        battery: c.battery,
+                        lastSeen: c.lastSeen,
+                        lat: c.lat,
+                        lng: c.lng,
+                      )),
+                    ];
+                    return allDevices.isEmpty
+                      ? _EmptyState(
+                          icon: Icons.visibility_off,
+                          message: 'No tienes acceso a otros dispositivos',
+                          action: OutlinedButton.icon(
+                            onPressed: () => context.push('/contacts'),
+                            icon: const Icon(Icons.person_add),
+                            label: const Text('Gestionar contactos'),
+                          ),
+                        )
+                      : Column(children: allDevices);
+                  },
+                  loading: () => const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator())),
+                  error: (e, _) => Center(child: Text('Error: $e')),
+                ),
+                loading: () => const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator())),
+                error: (e, _) => Center(child: Text('Error: $e')),
+              );
+            }),
+          ],
+              ),
             ),
-            const SizedBox(height: 24),
-            _SectionHeader(icon: Icons.people, title: 'Tus Contactos', subtitle: 'Usuarios que te tienen como contacto de emergencia'),
-            const SizedBox(height: 8),
-            contacts.when(
-              data: (list) => list.isEmpty
-                ? _EmptyState(
-                    icon: Icons.people_outline, 
-                    message: 'Nadie te ha agregado como contacto aun',
-                    action: OutlinedButton.icon(
-                      onPressed: () => context.push('/contacts'),
-                      icon: const Icon(Icons.person_add),
-                      label: const Text('Gestionar contactos'),
-                    ),
-                  )
-                : Column(children: list.map((c) => _ContactDeviceCard(contact: c)).toList()),
-              loading: () => const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator())),
-              error: (e, _) => Center(child: Text('Error: $e')),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatsCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final int count;
+
+  const _StatsCard({
+    required this.icon,
+    required this.label,
+    required this.count,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: theme.colorScheme.primary, size: 28),
+            const SizedBox(height: 12),
+            Text(
+              count.toString(),
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withOpacity(0.6),
+              ),
             ),
           ],
         ),
@@ -488,16 +757,47 @@ class _MyDeviceCardState extends ConsumerState<_MyDeviceCard> {
       ],
     ));
     if (confirmed == true && mounted) {
-      final user = ref.read(firebaseAuthProvider).currentUser;
-      if (user != null) {
-        // Enviar comando de reset al firmware antes de borrar
-        await ref.read(firestoreProvider).collection('users').doc(user.uid)
-          .collection('devices').doc(widget.device.id).update({'cmd_reset': true});
-        // Esperar un momento para que el heartbeat lo lea
-        await Future.delayed(const Duration(seconds: 1));
-        // Borrar el documento
-        await ref.read(firestoreProvider).collection('users').doc(user.uid)
-          .collection('devices').doc(widget.device.id).delete();
+      try {
+        final user = ref.read(firebaseAuthProvider).currentUser;
+        if (user == null) return;
+        
+        final deviceDoc = ref.read(firestoreProvider)
+            .collection('users')
+            .doc(user.uid)
+            .collection('devices')
+            .doc(widget.device.id);
+        
+        // Marcar cmd_reset para que el firmware haga factory reset
+        await deviceDoc.update({
+          'cmd_reset': true,
+          'provisioned': false,
+          'reset_requested_at': FieldValue.serverTimestamp(),
+        });
+        
+        // Esperar 3 segundos para que el firmware reciba el comando
+        await Future.delayed(const Duration(seconds: 3));
+        
+        // Eliminar el documento de Firestore
+        await deviceDoc.delete();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✓ Dispositivo desvinculado correctamente'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error al desvincular: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     }
   }
@@ -620,117 +920,4 @@ class _InfoTile extends StatelessWidget {
       Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis),
     ])),
   ]);
-}
-
-// ===== WIDGET COMPARTIDO PARA DISPOSITIVOS =====
-class _ContactDeviceCard extends StatefulWidget {
-  final MonitoringContact contact;
-  const _ContactDeviceCard({required this.contact});
-  @override State<_ContactDeviceCard> createState() => _ContactDeviceCardState();
-}
-
-class _ContactDeviceCardState extends State<_ContactDeviceCard> {
-  bool _isExpanded = false;
-
-  String _timeAgo(DateTime? dt) {
-    if (dt == null) return 'Sin datos';
-    final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return 'Ahora';
-    if (diff.inMinutes < 60) return 'Hace ${diff.inMinutes} min';
-    if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
-    return 'Hace ${diff.inDays} dias';
-  }
-
-  Future<void> _openInMaps() async {
-    if (widget.contact.lat == null || widget.contact.lng == null) return;
-    final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${widget.contact.lat},${widget.contact.lng}');
-    if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final contact = widget.contact;
-    final hasLocation = contact.lat != null && contact.lng != null;
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final isSOS = contact.isSOS;
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      color: isSOS ? Colors.red.withOpacity(0.1) : null,
-      clipBehavior: Clip.antiAlias,
-      child: Column(children: [
-        InkWell(
-          onTap: () => setState(() => _isExpanded = !_isExpanded),
-          child: Padding(padding: const EdgeInsets.all(16), child: Row(children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: isSOS ? Colors.red.withOpacity(0.2) : (contact.isOnline ? Colors.green.withOpacity(0.2) : Colors.grey.withOpacity(0.2)),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(isSOS ? Icons.warning : Icons.watch,
-                color: isSOS ? Colors.red : (contact.isOnline ? Colors.green : Colors.grey), size: 28),
-            ),
-            const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(contact.formattedName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              if (contact.formattedUsername.isNotEmpty)
-                Text(contact.formattedUsername, style: TextStyle(color: theme.colorScheme.primary, fontSize: 12)),
-              const SizedBox(height: 4),
-              Row(children: [
-                Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle,
-                  color: isSOS ? Colors.red : (contact.isOnline ? Colors.green : Colors.grey))),
-                const SizedBox(width: 6),
-                Text(isSOS ? 'ALERTA SOS' : (contact.isOnline ? 'En linea' : 'Desconectado'), style: TextStyle(
-                  color: isSOS ? Colors.red : (contact.isOnline ? Colors.green : Colors.grey),
-                  fontSize: 13, fontWeight: isSOS ? FontWeight.bold : FontWeight.normal)),
-              ]),
-            ])),
-            if (contact.battery != null) Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: contact.battery! < 20 ? Colors.red.withOpacity(0.1) : Colors.green.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8)),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(contact.battery! < 20 ? Icons.battery_alert : Icons.battery_full, size: 16,
-                  color: contact.battery! < 20 ? Colors.red : Colors.green),
-                const SizedBox(width: 4),
-                Text('${contact.battery}%', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
-                  color: contact.battery! < 20 ? Colors.red : Colors.green)),
-              ]),
-            ),
-            const SizedBox(width: 8),
-            Icon(_isExpanded ? Icons.expand_less : Icons.expand_more),
-          ])),
-        ),
-        if (_isExpanded) ...[
-          const Divider(height: 1),
-          if (hasLocation) SizedBox(height: 180, child: Stack(children: [
-            FlutterMap(
-              options: MapOptions(initialCenter: LatLng(contact.lat!, contact.lng!), initialZoom: 15,
-                interactionOptions: const InteractionOptions(flags: InteractiveFlag.none)),
-              children: [
-                TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.wilobu_app'),
-                MarkerLayer(markers: [Marker(point: LatLng(contact.lat!, contact.lng!),
-                  child: const Icon(Icons.location_pin, color: Colors.red, size: 40))]),
-              ],
-            ),
-            Positioned(right: 8, bottom: 8, child: FloatingActionButton.small(
-              heroTag: 'map_contact_${contact.deviceId}', onPressed: _openInMaps, child: const Icon(Icons.open_in_new, size: 18))),
-          ]))
-          else Container(height: 100, color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
-            child: const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.location_off, size: 32, color: Colors.grey),
-              SizedBox(height: 4),
-              Text('Ubicacion no disponible', style: TextStyle(color: Colors.grey)),
-            ]))),
-          Padding(padding: const EdgeInsets.all(16), child: Row(children: [
-            Expanded(child: _InfoTile(icon: Icons.watch, label: 'Dispositivo', value: contact.deviceId)),
-            Expanded(child: _InfoTile(icon: Icons.access_time, label: 'Ultima conexion', value: _timeAgo(contact.lastSeen))),
-          ])),
-        ],
-      ]),
-    );
-  }
 }

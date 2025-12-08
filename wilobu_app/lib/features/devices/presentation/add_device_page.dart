@@ -60,6 +60,9 @@ class _AddDevicePageState extends ConsumerState<AddDevicePage> {
         'status': 'online',
         'lastSeen': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
+        'viewers': [], // Array of viewer objects {uid, name, email}
+        'viewerUids': [], // Array of viewer UIDs for security rules
+        'emergencyContacts': [], // Array of emergency contact UIDs
       });
       
       if(mounted) {

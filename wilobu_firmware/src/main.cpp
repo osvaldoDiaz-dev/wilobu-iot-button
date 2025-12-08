@@ -84,6 +84,7 @@ bool isProvisioned = false;
 GPSLocation lastLocation = {0.0, 0.0, 999.0, 0, false};
 unsigned long lastLocationUpdate = 0;
 unsigned long lastHeartbeat = 0;
+bool firstHeartbeatSent = false;
 
 // BLE
 NimBLEServer* pServer = nullptr;
@@ -476,7 +477,19 @@ void sendHeartbeat() {
         return;
     }
 
-    if ((millis() - lastHeartbeat) < HEARTBEAT_INTERVAL) {
+    // Verificar si está en proceso de desprovisión (provisioned=false en NVS)
+    preferences.begin("wilobu", true);
+    bool nvs_provisioned = preferences.getBool("provisioned", true);
+    preferences.end();
+    
+    // Si está siendo desprovisionado, hacer heartbeat cada 30 segundos para procesar cmd_reset rápido
+    unsigned long heartbeat_check_interval = !nvs_provisioned ? 30000UL : HEARTBEAT_INTERVAL;
+    // Primer heartbeat agresivo a los ~10s para detectar 404/410 rápido
+    if (!firstHeartbeatSent) {
+        heartbeat_check_interval = 10000UL;
+    }
+
+    if ((millis() - lastHeartbeat) < heartbeat_check_interval) {
         return;
     }
 
@@ -495,7 +508,7 @@ void sendHeartbeat() {
     } else {
         Serial.println("[HEARTBEAT] Error");
     }
-
+    firstHeartbeatSent = true;
     lastHeartbeat = millis();
 }
 // ===== FACTORY RESET =====
@@ -560,10 +573,11 @@ void setup() {
     if (modemApn.length() > 0) {
         Serial.print("[NVS] APN: "); Serial.println(modemApn);
     }
-    // Si no hay APN en NVS, usar un valor por defecto de desarrollo
+    // Si no hay APN en NVS, usar APNs universales que funcionan con la mayoría de operadores
+    // web.gprsuniversal es estándar Vodafone internacional y soportado por muchos operadores
     if (modemApn.length() == 0) {
-        modemApn = String("internet");
-        Serial.println("[NVS] AVISO: APN no configurado en NVS. Usando 'internet' por defecto.");
+        modemApn = String("web.gprsuniversal");
+        Serial.println("[NVS] APN no configurado. Usando 'web.gprsuniversal' (universal compatible).");
     }
     if (isProvisioned) {
         ownerUid = preferences.getString("ownerUid", "");
@@ -621,6 +635,29 @@ void loop() {
             } else {
                 Serial.println("[LOG] Valor inválido. Usa 0=ERROR, 1=INFO, 2=DEBUG");
             }
+        }
+        else if (cmd.startsWith("apn ")) {
+            String newApn = cmd.substring(4);
+            modemApn = newApn;
+            preferences.begin("wilobu", false);
+            preferences.putString("apn", modemApn);
+            preferences.end();
+            Serial.print("[APN] Cambiado a: "); Serial.println(modemApn);
+            Serial.println("[APN] Requiere reinicio para aplicar cambios. Usa 'restart'");
+        }
+        else if (cmd == "restart") {
+            Serial.println("[RESTART] Reiniciando en 2s...");
+            delay(2000);
+            ESP.restart();
+        }
+        else if (cmd == "factory_reset") {
+            Serial.println("[FACTORY_RESET] Limpiando NVS y reiniciando...");
+            preferences.begin("wilobu", false);
+            preferences.clear();  // Borrar todo
+            preferences.end();
+            Serial.println("[FACTORY_RESET] NVS limpiada. Reiniciando en 2s...");
+            delay(2000);
+            ESP.restart();
         }
         else if (cmd.startsWith("at ")) {
             String atcmd = cmd.substring(3);

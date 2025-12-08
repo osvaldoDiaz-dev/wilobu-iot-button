@@ -12,12 +12,6 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
     
-    // Regla para collectionGroup queries de devices
-    // Permite a usuarios autenticados leer dispositivos donde son contacto de emergencia
-    match /{path=**}/devices/{deviceId} {
-      allow read: if isSignedIn();
-    }
-    
     // Reglas para la colección de usuarios
     match /users/{userId} {
       // Cualquier usuario autenticado puede leer cualquier perfil público (para búsqueda por email)
@@ -46,7 +40,7 @@ service cloud.firestore {
         // Los contactos de emergencia o viewers pueden leer el dispositivo
         allow read: if isSignedIn() && (
           request.auth.uid in resource.data.get('emergencyContacts', []) ||
-          resource.data.get('viewers', []).map(v => v.uid).hasAny([request.auth.uid])
+          request.auth.uid in resource.data.get('viewerUids', [])
         );
         
         // Permitir update solo si se está añadiendo al array de emergencyContacts
@@ -79,6 +73,17 @@ service cloud.firestore {
     match /system/{document=**} {
       allow read: if isSignedIn();
       allow write: if false; // Solo admin desde consola
+    }
+    
+    // Regla especial para collectionGroup query de devices
+    // Permite buscar dispositivos donde el usuario es el dueño, viewer o contacto de emergencia
+    match /{path=**}/devices/{deviceId} {
+      // Permitir leer si el usuario es el dueño, viewer o contacto de emergencia
+      allow read: if isSignedIn() && (
+        resource.data.get('ownerUid', '') == request.auth.uid ||
+        request.auth.uid in resource.data.get('emergencyContacts', []) ||
+        request.auth.uid in resource.data.get('viewerUids', [])
+      );
     }
   }
 }

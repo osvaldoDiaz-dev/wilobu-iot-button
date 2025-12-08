@@ -13,6 +13,7 @@ import 'features/devices/presentation/device_settings_view.dart';
 import 'features/contacts/presentation/contacts_page.dart';
 import 'features/alerts/presentation/alerts_page.dart';
 import 'features/sos/sos_alert_page.dart';
+import 'features/profile/presentation/profile_page.dart';
 
 /// Provider para suspender la redirección automática durante el registro
 final suspendRedirectProvider = StateProvider<bool>((ref) => false);
@@ -134,6 +135,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           
           return SosAlertPage(deviceId: deviceId, userId: userId);
         },
+      ),
+      GoRoute(
+        path: '/profile',
+        builder: (context, state) => const ProfilePage(),
       ),
     ],
   );

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:wilobu_app/firebase_providers.dart';
 import 'package:wilobu_app/router.dart';
+import '../../profile/infrastructure/profile_service.dart';
 
 // Flag para indicar que es un nuevo registro (mostrar bienvenida en Home)
 final justRegisteredProvider = StateProvider<bool>((ref) => false);
@@ -289,6 +289,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
 
     final auth = ref.read(firebaseAuthProvider);
     final firestore = ref.read(firestoreProvider);
+    final profileService = ProfileService(firestore: firestore, auth: auth);
 
     try {
       // Suspender redirección automática del router
@@ -300,15 +301,8 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
         password: password,
       );
       
-      // Crear documento del usuario en Firestore con modelo completo
-      final defaultName = email.split('@')[0];
-      await firestore.collection('users').doc(userCredential.user!.uid).set({
-        'email': email.toLowerCase(),
-        'name': defaultName,
-        'displayName': defaultName, // Usado como fallback en Functions
-        'fcmTokens': [], // Array vacío para tokens de notificaciones push
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      // Crear perfil del usuario usando el ProfileService
+      await profileService.createProfile(userCredential.user!.uid, email);
       
       setState(() => _isLoading = false);
       

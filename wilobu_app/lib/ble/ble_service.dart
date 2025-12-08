@@ -71,8 +71,17 @@ class BleService {
         try {
           final raw = await deviceIdChar.read();
           if (raw.isNotEmpty) {
-            resolvedDeviceId = String.fromCharCodes(raw).trim();
-            print('[BLE] ✓ DeviceID leído: $resolvedDeviceId');
+            // Convertir bytes a String, filtrando solo caracteres ASCII válidos (A-F, 0-9)
+            String rawId = String.fromCharCodes(raw).trim();
+            // Validar que solo contenga caracteres hexadecimales (0-9, A-F)
+            if (RegExp(r'^[0-9A-Fa-f]+$').hasMatch(rawId)) {
+              resolvedDeviceId = rawId.toUpperCase();
+              print('[BLE] ✓ DeviceID leído: $resolvedDeviceId');
+            } else {
+              print('[BLE] ⚠️ DeviceID inválido (contiene caracteres no-hex): $rawId');
+              // Usar MAC address como fallback
+              resolvedDeviceId = device.remoteId.str.replaceAll(':', '').toUpperCase();
+            }
           }
         } catch (e) {
           print('[BLE] ⚠️ No se pudo leer DeviceID: $e');

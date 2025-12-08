@@ -206,7 +206,10 @@ async function updateFirestore(env, ownerUid, deviceId, doc) {
     const projectId = env?.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
     const domain = env?.FIREBASE_CUSTOM_DOMAIN || DEFAULT_FIREBASE_CUSTOM_DOMAIN;
 
-    const firestoreUrl = `https://${domain}/v1/projects/${projectId}/databases/(default)/documents/users/${ownerUid}/devices/${deviceId}?key=${apiKey}`;
+    // Construir updateMask para evitar sobrescribir campos no enviados
+    const fieldPaths = Object.keys(doc.fields || {});
+    const updateMask = fieldPaths.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+    const firestoreUrl = `https://${domain}/v1/projects/${projectId}/databases/(default)/documents/users/${ownerUid}/devices/${deviceId}?key=${apiKey}${updateMask ? `&${updateMask}` : ''}`;
 
     console.log(`[FIRESTORE] PATCH ${firestoreUrl}`);
 
