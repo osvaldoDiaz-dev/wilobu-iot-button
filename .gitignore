@@ -119,3 +119,27 @@ captures/
 **/.vscode/c_cpp_properties.json
 **/.vscode/launch.json
 **/.vscode/ipch
+
+# Credenciales y secretos - NO SUBIR
+**/service-account*.json
+**/serviceAccount*.json
+**/*-credentials.json
+**/*.p12
+**/*.pem
+**/google-services.json
+**/GoogleService-Info.plist
+**/.env
+**/.env.*
+**/secrets/
+**/credentials/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+*-debug.log
+
+# Node
+**/node_modules/

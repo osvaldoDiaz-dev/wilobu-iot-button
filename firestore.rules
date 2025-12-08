@@ -12,6 +12,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
     
+    // Regla para collectionGroup queries de devices
+    // Permite a usuarios autenticados leer dispositivos donde son contacto de emergencia
+    match /{path=**}/devices/{deviceId} {
+      allow read: if isSignedIn();
+    }
+    
     // Reglas para la colección de usuarios
     match /users/{userId} {
       // Cualquier usuario autenticado puede leer cualquier perfil público (para búsqueda por email)
@@ -37,15 +43,35 @@ service cloud.firestore {
         // El dueño puede leer/escribir sus propios dispositivos
         allow read, write: if isOwner(userId);
         
-        // Los contactos de emergencia pueden leer el dispositivo
-        allow read: if isSignedIn() && 
-                       request.auth.uid in resource.data.get('emergencyContacts', []);
+        // Los contactos de emergencia o viewers pueden leer el dispositivo
+        allow read: if isSignedIn() && (
+          request.auth.uid in resource.data.get('emergencyContacts', []) ||
+          resource.data.get('viewers', []).map(v => v.uid).hasAny([request.auth.uid])
+        );
         
         // Permitir update solo si se está añadiendo al array de emergencyContacts
         // (cuando un usuario acepta una solicitud de contacto)
         allow update: if isSignedIn() && 
                          // Verificar que solo se está modificando emergencyContacts
                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts']);
+        
+        // Subcolección de historial de alertas del dispositivo
+        match /alertHistory/{alertId} {
+          // El dueño puede leer y escribir su historial
+          allow read, write: if isOwner(userId);
+          
+          // Los contactos de emergencia pueden leer el historial
+          allow read: if isSignedIn();
+        }
+      }
+      
+      // Subcolección de alertas recibidas (como contacto de emergencia)
+      match /receivedAlerts/{alertId} {
+        // El usuario puede leer y escribir sus alertas recibidas
+        allow read, write: if isOwner(userId);
+        
+        // Otros usuarios pueden crear alertas (cuando envían SOS)
+        allow create: if isSignedIn();
       }
     }
     

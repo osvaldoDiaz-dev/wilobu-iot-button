@@ -21,8 +21,11 @@ private:
     // Métodos auxiliares
     String sendATCommand(const String& cmd, unsigned long timeout);
     bool waitForResponse(const String& expected, unsigned long timeout);
+    String httpsPost(const String& url, const String& json);
     
 public:
+    bool factoryResetPending = false;  // Flag para factory reset desde cloud
+    
     ModemHTTPS(HardwareSerial* serial);
     
     // Implementación de métodos de IModem
@@ -33,6 +36,8 @@ public:
     
     bool sendToFirebase(const String& path, const String& jsonData) override;
     bool sendSOSAlert(const String& sosType, const GPSLocation& location) override;
+    bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) override;
+    bool sendToCloudFunction(const String& functionPath, const String& jsonData);
     
     bool initGNSS() override;
     bool getLocation(GPSLocation& location) override;

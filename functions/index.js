@@ -1,5 +1,6 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const crypto = require('crypto');
 
 // Inicializar Firebase Admin SDK
 admin.initializeApp();
@@ -7,6 +8,88 @@ admin.initializeApp();
 // ===== CONFIGURACIÓN =====
 const NOTIFICATION_COOLDOWN = 5000;  // Esperar 5s antes de enviar duplicadas
 const MAX_FCM_TOKENS_PER_USER = 10;  // Máximo de dispositivos por usuario
+const PSK_SECRET = 'wilobu_psk_secret_2025';  // Pre-shared key para auth
+
+// ===== CLOUD FUNCTION: HEARTBEAT (HTTP) =====
+/**
+ * Recibe heartbeat del firmware y actualiza status/ubicación en Firestore
+ * Endpoint: https://us-central1-wilobu-d21b2.cloudfunctions.net/heartbeat
+ */
+exports.heartbeat = functions.https.onRequest(async (req, res) => {
+    // CORS
+    res.set('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+        res.set('Access-Control-Allow-Methods', 'POST');
+        res.set('Access-Control-Allow-Headers', 'Content-Type');
+        return res.status(204).send('');
+    }
+    
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
+    
+    try {
+        const { deviceId, ownerUid, auth, lastLocation, status } = req.body;
+        
+        // Validar campos requeridos
+        if (!deviceId || !ownerUid) {
+            return res.status(400).json({ error: 'deviceId and ownerUid required' });
+        }
+        
+        // Validar auth PSK
+        if (auth && auth.mode === 'psk') {
+            const { ts, nonce, sig } = auth;
+            const canonical = `${deviceId}|${ownerUid}|${ts}|${nonce}`;
+            const expected = crypto.createHmac('sha256', PSK_SECRET).update(canonical).digest('hex');
+            if (sig !== expected) {
+                console.warn('[HEARTBEAT] Invalid signature');
+                return res.status(401).json({ error: 'Invalid auth' });
+            }
+        }
+        
+        // Construir update
+        const update = {
+            status: status || 'online',
+            lastSeen: admin.firestore.FieldValue.serverTimestamp()
+        };
+        
+        // Agregar ubicación si viene
+        if (lastLocation && lastLocation.lat && lastLocation.lng) {
+            update.lastLocation = {
+                geopoint: new admin.firestore.GeoPoint(lastLocation.lat, lastLocation.lng),
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            };
+        }
+        
+        // Leer documento actual para verificar cmd_reset
+        const deviceRef = admin.firestore()
+            .collection('users').doc(ownerUid)
+            .collection('devices').doc(deviceId);
+        
+        const deviceDoc = await deviceRef.get();
+        const cmdReset = deviceDoc.exists ? deviceDoc.data().cmd_reset === true : false;
+        
+        // Si el documento no existe, crearlo con datos iniciales
+        if (!deviceDoc.exists) {
+            update.deviceId = deviceId;
+            update.ownerUid = ownerUid;
+            update.createdAt = admin.firestore.FieldValue.serverTimestamp();
+            await deviceRef.set(update);
+            console.log(`[HEARTBEAT] ✓ ${deviceId} created (new device)`);
+        } else {
+            // Actualizar documento existente
+            await deviceRef.update(update);
+            console.log(`[HEARTBEAT] ✓ ${deviceId} updated`);
+        }
+        
+        // Responder con cmd_reset si está activo
+        return res.status(200).json({ success: true, cmd_reset: cmdReset });
+        
+    } catch (error) {
+        console.error('[HEARTBEAT] Error:', error);
+        return res.status(500).json({ error: error.message });
+    }
+});
 
 // ===== CLOUD FUNCTION: ALERTA SOS =====
 /**
@@ -77,6 +160,28 @@ exports.onDeviceStatusChange = functions.firestore
 // ===== PROCESAMIENTO DE ALERTA SOS =====
 async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
     console.log(`[PROCESSING] Procesando alerta SOS: ${sosStatus}`);
+    
+    // ===== OBTENER NOMBRE DEL DUEÑO DEL DISPOSITIVO =====
+    let ownerName = 'Usuario';
+    try {
+        const ownerDoc = await admin.firestore()
+            .collection('users')
+            .doc(userId)
+            .get();
+        
+        if (ownerDoc.exists) {
+            const ownerData = ownerDoc.data();
+            ownerName = ownerData.name || ownerData.displayName || ownerData.email || 'Usuario';
+            console.log(`[PROCESSING] Dueño del dispositivo: ${ownerName}`);
+        }
+    } catch (err) {
+        console.warn('[PROCESSING] Error obteniendo nombre del dueño:', err);
+    }
+    
+    // Enriquecer deviceData con info del dueño
+    deviceData.ownerName = ownerName;
+    deviceData.ownerUid = userId;
+    deviceData.deviceId = deviceId;
     
     // Determinar tipo y mensaje de SOS
     const sosConfig = {
@@ -161,6 +266,38 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
     });
     
     console.log(`[PROCESSING] ✓ Resultado: ${successCount} éxitos, ${failureCount} fallos`);
+    
+    // ===== GUARDAR EN alertHistory DEL DISPOSITIVO =====
+    // Reutilizamos la variable 'location' que ya existe arriba
+    let alertGeopoint = null;
+    if (location && location.geopoint) {
+        alertGeopoint = location.geopoint;
+    } else if (location && location.latitude && location.longitude) {
+        alertGeopoint = new admin.firestore.GeoPoint(location.latitude, location.longitude);
+    }
+    
+    await admin.firestore()
+        .collection('users').doc(userId)
+        .collection('devices').doc(deviceId)
+        .collection('alertHistory')
+        .add({
+            type: sosStatus.replace('sos_', ''),
+            sosType: sosStatus,
+            message: sosMessage,
+            location: alertGeopoint,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            deviceId: deviceId,
+            ownerUid: userId,
+            ownerName: deviceData.ownerName || 'Usuario',
+            notificationsSent: successCount,
+            notificationsFailed: failureCount,
+            contactsNotified: emergencyContacts.map(c => ({
+                uid: c.uid,
+                name: c.name || 'Contacto'
+            }))
+        });
+    
+    console.log(`[PROCESSING] ✓ Alerta guardada en alertHistory del dispositivo ${deviceId}`);
     
     // Guardar estadísticas de notificación
     await admin.firestore()
@@ -277,6 +414,32 @@ async function sendSOSNotificationToContact(
         const response = await admin.messaging().sendMulticast(message);
         
         console.log(`[CONTACT] ✓ ${contactName}: ${response.successCount} éxitos, ${response.failureCount} fallos`);
+        
+        // ===== GUARDAR ALERTA EN receivedAlerts DEL CONTACTO =====
+        const location = deviceData.lastLocation || null;
+        let geopoint = null;
+        if (location && location.geopoint) {
+            geopoint = location.geopoint;
+        } else if (location && location.latitude && location.longitude) {
+            geopoint = new admin.firestore.GeoPoint(location.latitude, location.longitude);
+        }
+        
+        await admin.firestore()
+            .collection('users').doc(contactUid)
+            .collection('receivedAlerts')
+            .add({
+                fromDeviceId: deviceData.deviceId || 'unknown',
+                fromUserName: deviceData.ownerName || 'Usuario',
+                fromUserId: deviceData.ownerUid || null,
+                type: config.type.toLowerCase(),
+                sosType: dataPayload.sosType,
+                message: sosMessage,
+                location: geopoint,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                acknowledged: false,
+            });
+        
+        console.log(`[CONTACT] ✓ Alerta guardada en receivedAlerts de ${contactName}`);
         
         // Procesar fallos y eliminar tokens inválidos
         if (response.failureCount > 0) {
@@ -427,6 +590,87 @@ exports.unregisterFcmToken = functions.https.onCall(async (data, context) => {
     } catch (error) {
         console.error('[FCM-UNREGISTER] Error:', error);
         throw new functions.https.HttpsError('internal', error.message);
+    }
+});
+
+// ===== CLOUD FUNCTION: AGREGAR USUARIO DE PRUEBA COMO CONTACTO =====
+/**
+ * Agrega al usuario de prueba como contacto de emergencia de todos los dispositivos
+ * Solo ejecutar una vez para configuración inicial
+ * Endpoint: https://us-central1-wilobu-d21b2.cloudfunctions.net/addTestUserAsContact
+ */
+exports.addTestUserAsContact = functions.https.onRequest(async (req, res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+        res.set('Access-Control-Allow-Methods', 'POST');
+        res.set('Access-Control-Allow-Headers', 'Content-Type');
+        return res.status(204).send('');
+    }
+    
+    try {
+        const TEST_USER_EMAIL = 'wilobu.test@gmail.com';
+        const TEST_USER_NAME = 'Usuario Wilobu Test';
+        
+        // Buscar UID del usuario de prueba
+        const usersRef = admin.firestore().collection('users');
+        const testUserQuery = await usersRef.where('email', '==', TEST_USER_EMAIL).limit(1).get();
+        
+        if (testUserQuery.empty) {
+            return res.status(404).json({ error: 'Usuario de prueba no encontrado' });
+        }
+        
+        const testUserDoc = testUserQuery.docs[0];
+        const testUserUid = testUserDoc.id;
+        
+        console.log(`[ADD-TEST-CONTACT] Usuario de prueba: ${testUserUid}`);
+        
+        // Contacto de prueba a agregar
+        const testContact = {
+            uid: testUserUid,
+            name: TEST_USER_NAME,
+            relation: 'Soporte Wilobu',
+            phone: '+56900000000'
+        };
+        
+        // Obtener todos los usuarios
+        const allUsers = await usersRef.get();
+        let devicesUpdated = 0;
+        
+        for (const userDoc of allUsers.docs) {
+            // Saltar el usuario de prueba (no se agrega a sí mismo)
+            if (userDoc.id === testUserUid) continue;
+            
+            // Obtener dispositivos del usuario
+            const devicesRef = usersRef.doc(userDoc.id).collection('devices');
+            const devices = await devicesRef.get();
+            
+            for (const deviceDoc of devices.docs) {
+                const data = deviceDoc.data();
+                const contacts = data.emergencyContacts || [];
+                
+                // Verificar si ya está agregado
+                const alreadyAdded = contacts.some(c => c.uid === testUserUid);
+                
+                if (!alreadyAdded) {
+                    await deviceDoc.ref.update({
+                        emergencyContacts: admin.firestore.FieldValue.arrayUnion(testContact)
+                    });
+                    devicesUpdated++;
+                    console.log(`[ADD-TEST-CONTACT] Agregado a ${userDoc.id}/${deviceDoc.id}`);
+                }
+            }
+        }
+        
+        return res.status(200).json({ 
+            success: true, 
+            testUserUid,
+            devicesUpdated,
+            message: `Usuario de prueba agregado a ${devicesUpdated} dispositivos`
+        });
+        
+    } catch (error) {
+        console.error('[ADD-TEST-CONTACT] Error:', error);
+        return res.status(500).json({ error: error.message });
     }
 });
 

@@ -1,9 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wilobu_app/firebase_providers.dart';
+import 'package:wilobu_app/theme/app_theme.dart';
 
 /// Vista para configurar un dispositivo Wilobu
 class DeviceSettingsView extends ConsumerStatefulWidget {
@@ -138,11 +137,21 @@ class _DeviceSettingsViewState extends ConsumerState<DeviceSettingsView> {
     if (confirm != true) return;
     
     setState(() => _isLoading = true);
-    
     try {
       final user = ref.read(firebaseAuthProvider).currentUser;
       if (user == null) return;
-      
+
+      // Marcar cmd_reset antes de eliminar
+      await ref.read(firestoreProvider)
+          .collection('users')
+          .doc(user.uid)
+          .collection('devices')
+          .doc(widget.deviceId)
+          .update({'cmd_reset': true});
+
+      // Esperar 2 segundos para que el firmware reciba el reset
+      await Future.delayed(const Duration(seconds: 2));
+
       // Eliminar documento del dispositivo
       await ref.read(firestoreProvider)
           .collection('users')
@@ -150,7 +159,7 @@ class _DeviceSettingsViewState extends ConsumerState<DeviceSettingsView> {
           .collection('devices')
           .doc(widget.deviceId)
           .delete();
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -179,9 +188,11 @@ class _DeviceSettingsViewState extends ConsumerState<DeviceSettingsView> {
       );
     }
     
-    return Scaffold(
+    return WilobuScaffold(
       appBar: AppBar(
         title: const Text('Configuración del Wilobu'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

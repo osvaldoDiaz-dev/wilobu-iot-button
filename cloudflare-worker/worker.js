@@ -17,9 +17,8 @@
 
 // ===== CONFIGURACIÓN =====
 // Obtener estos valores de Firebase Console
-const FIREBASE_PROJECT_ID = 'wilobu-d21b2';
-const FIREBASE_API_KEY = '';  // TODO: Obtener de Firebase Console
-const FIREBASE_CUSTOM_DOMAIN = 'firestore.googleapis.com';
+const DEFAULT_FIREBASE_PROJECT_ID = 'wilobu-d21b2';
+const DEFAULT_FIREBASE_CUSTOM_DOMAIN = 'firestore.googleapis.com';
 
 // ===== CONSTANTES =====
 const ALLOWED_STATUS = ['online', 'sos_general', 'sos_medica', 'sos_seguridad', 'offline'];
@@ -27,12 +26,14 @@ const REQUEST_TIMEOUT = 30000;  // 30 segundos
 const MAX_PAYLOAD_SIZE = 5120;  // 5 KB
 
 // ===== LISTENER PRINCIPAL =====
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event.request));
-});
+export default {
+    async fetch(request, env) {
+        return handleRequest(request, env);
+    },
+};
 
 // ===== MANEJADOR DE SOLICITUDES =====
-async function handleRequest(request) {
+async function handleRequest(request, env) {
     // Validar método HTTP (solo POST)
     if (request.method !== 'POST') {
         return errorResponse(405, 'Method not allowed. Use POST');
@@ -46,6 +47,11 @@ async function handleRequest(request) {
         // Logs y debugging
         console.log(`[WORKER] ${request.method} ${pathname}`);
         console.log(`[WORKER] Content-Length: ${request.headers.get('content-length')} bytes`);
+        
+        // ===== RUTA: HEARTBEAT → REENVIAR A CLOUD FUNCTION =====
+        if (pathname === '/heartbeat') {
+            return await handleHeartbeat(request, env);
+        }
         
         // Validar tamaño de payload
         const contentLength = parseInt(request.headers.get('content-length') || '0');
@@ -75,7 +81,7 @@ async function handleRequest(request) {
         const firestoreDoc = buildFirestoreDocument(payload);
         
         // Enviar a Firestore con HTTPS (TLS 1.2)
-        const updateResult = await updateFirestore(ownerUid, deviceId, firestoreDoc);
+        const updateResult = await updateFirestore(env, ownerUid, deviceId, firestoreDoc);
         
         if (!updateResult.success) {
             return errorResponse(updateResult.status || 500, updateResult.error);
@@ -186,9 +192,9 @@ function buildFirestoreDocument(payload) {
 }
 
 // ===== ACTUALIZAR FIRESTORE =====
-async function updateFirestore(ownerUid, deviceId, doc) {
-    // Validar que tenemos credenciales
-    if (!FIREBASE_API_KEY) {
+async function updateFirestore(env, ownerUid, deviceId, doc) {
+    const apiKey = env?.FIREBASE_API_KEY;
+    if (!apiKey) {
         console.error('[WORKER] ERROR: FIREBASE_API_KEY no configurada');
         return {
             success: false,
@@ -196,12 +202,14 @@ async function updateFirestore(ownerUid, deviceId, doc) {
             status: 500
         };
     }
-    
-    // Construir URL de Firestore REST API
-    const firestoreUrl = `https://${FIREBASE_CUSTOM_DOMAIN}/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${ownerUid}/devices/${deviceId}?key=${FIREBASE_API_KEY}`;
-    
+
+    const projectId = env?.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
+    const domain = env?.FIREBASE_CUSTOM_DOMAIN || DEFAULT_FIREBASE_CUSTOM_DOMAIN;
+
+    const firestoreUrl = `https://${domain}/v1/projects/${projectId}/databases/(default)/documents/users/${ownerUid}/devices/${deviceId}?key=${apiKey}`;
+
     console.log(`[FIRESTORE] PATCH ${firestoreUrl}`);
-    
+
     try {
         const response = await fetch(firestoreUrl, {
             method: 'PATCH',
@@ -209,32 +217,30 @@ async function updateFirestore(ownerUid, deviceId, doc) {
                 'Content-Type': 'application/json',
                 'User-Agent': 'Wilobu-Proxy/1.0'
             },
-            body: JSON.stringify(doc),
-            timeout: REQUEST_TIMEOUT
+            body: JSON.stringify(doc)
         });
-        
-        // Logging de respuesta
+
         console.log(`[FIRESTORE] Status: ${response.status}`);
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             console.error('[FIRESTORE] Error:', errorText);
-            
+
             return {
                 success: false,
                 error: `Firestore error (${response.status}): ${errorText}`,
                 status: response.status
             };
         }
-        
+
         const responseData = await response.json();
-        console.log('[FIRESTORE] ✓ Documento actualizado');
-        
+        console.log('[FIRESTORE] Documento actualizado');
+
         return {
             success: true,
             data: responseData
         };
-        
+
     } catch (error) {
         console.error('[FIRESTORE] Exception:', error);
         return {
@@ -245,7 +251,6 @@ async function updateFirestore(ownerUid, deviceId, doc) {
     }
 }
 
-// ===== DISPARADOR DE NOTIFICACIÓN SOS =====
 async function triggerSOSNotification(ownerUid, deviceId, sosType, location) {
     // TODO: Implementar llamada a Cloud Function
     // La Cloud Function se encarga de:
@@ -255,6 +260,42 @@ async function triggerSOSNotification(ownerUid, deviceId, sosType, location) {
     
     console.log(`[NOTIFICATION] SOS ${sosType} para contactos de emergencia`);
     // Implementar cuando Cloud Functions esté lista
+}
+
+// ===== MANEJADOR DE HEARTBEAT → CLOUD FUNCTION =====
+async function handleHeartbeat(request, env) {
+    const CLOUD_FUNCTION_URL = env?.HEARTBEAT_URL || 'https://us-central1-wilobu-d21b2.cloudfunctions.net/heartbeat';
+    
+    try {
+        // Leer body de la petición
+        const body = await request.text();
+        console.log(`[HEARTBEAT] Reenviando a Cloud Function...`);
+        
+        // Reenviar a Cloud Function con HTTPS
+        const response = await fetch(CLOUD_FUNCTION_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: body
+        });
+        
+        const responseText = await response.text();
+        console.log(`[HEARTBEAT] Cloud Function respondió: ${response.status}`);
+        
+        // Devolver respuesta de la Cloud Function
+        return new Response(responseText, {
+            status: response.status,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Powered-By': 'Wilobu-Proxy/1.0'
+            }
+        });
+        
+    } catch (error) {
+        console.error('[HEARTBEAT] Error:', error);
+        return errorResponse(500, 'Heartbeat proxy error: ' + error.message);
+    }
 }
 
 // ===== RESPUESTAS =====
@@ -282,18 +323,4 @@ function errorResponse(status, message) {
             'Cache-Control': 'no-cache'
         }
     });
-}
-    });
-
-  } catch (error) {
-    console.error('[PROXY] Error:', error);
-    
-    return new Response(JSON.stringify({
-      error: 'Internal server error',
-      message: error.message
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
 }

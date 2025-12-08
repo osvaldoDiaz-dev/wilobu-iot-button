@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:wilobu_app/firebase_providers.dart';
@@ -14,114 +15,257 @@ class LoginPage extends ConsumerStatefulWidget {
 
 class _LoginPageState extends ConsumerState<LoginPage> {
   final _formKey = GlobalKey<FormState>();
-  String _email = '';
-  String _password = '';
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
     return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const Text('Wilobu – Acceso'),
-        centerTitle: true,
-      ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  // Logo Wilobu
-                  Container(
-                    width: 120,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: theme.brightness == Brightness.dark 
-                          ? Colors.white30 
-                          : Colors.grey.shade300,
-                        width: 2,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: theme.brightness == Brightness.dark
-                            ? Colors.black26
-                            : Colors.grey.shade400,
-                          blurRadius: 10,
-                          spreadRadius: 2,
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          image: DecorationImage(
+            image: AssetImage('assets/images/fondo_wilobu.jpg'),
+            fit: BoxFit.cover,
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      // Logo Wilobu con sombra
+                      Container(
+                        width: 160,
+                        height: 160,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withAlpha(40),
+                              blurRadius: 20,
+                              spreadRadius: 5,
+                            ),
+                          ],
                         ),
-                      ],
-                      image: const DecorationImage(
-                        image: AssetImage('assets/images/wilobu_logo.png'),
-                        fit: BoxFit.cover,
+                        child: ClipOval(
+                          child: Image.asset(
+                            'assets/images/wilobu_logo.png',
+                            fit: BoxFit.cover,
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 16),
+                      // Título Wilobu
+                      Text(
+                        'Wilobu',
+                        style: TextStyle(
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.indigo.shade900,
+                          shadows: [
+                            Shadow(
+                              color: Colors.white,
+                              blurRadius: 15,
+                              offset: const Offset(0, 0),
+                            ),
+                            Shadow(
+                              color: Colors.white,
+                              blurRadius: 30,
+                              offset: const Offset(0, 0),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withAlpha(180),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          'Protección y cuidado siempre contigo',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade800,
+                            fontStyle: FontStyle.italic,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      // Card con formulario
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withAlpha(230),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.purple.withAlpha(30),
+                              blurRadius: 20,
+                              spreadRadius: 5,
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              'Iniciar Sesión',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.indigo.shade600,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            TextFormField(
+                              controller: _emailController,
+                              style: TextStyle(color: Colors.grey.shade900, fontSize: 16),
+                              decoration: InputDecoration(
+                                labelText: 'Correo electrónico',
+                                labelStyle: TextStyle(color: Colors.grey.shade700),
+                                hintStyle: TextStyle(color: Colors.grey.shade500),
+                                prefixIcon: Icon(Icons.email_outlined, color: Colors.indigo.shade600),
+                                filled: true,
+                                fillColor: Colors.white,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade400),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade400),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.indigo.shade600, width: 2),
+                                ),
+                              ),
+                              keyboardType: TextInputType.emailAddress,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Ingresa tu correo';
+                                }
+                                if (!value.contains('@')) {
+                                  return 'Correo no válido';
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              controller: _passwordController,
+                              style: TextStyle(color: Colors.grey.shade900, fontSize: 16),
+                              decoration: InputDecoration(
+                                labelText: 'Contraseña',
+                                labelStyle: TextStyle(color: Colors.grey.shade700),
+                                hintStyle: TextStyle(color: Colors.grey.shade500),
+                                prefixIcon: Icon(Icons.lock_outline, color: Colors.indigo.shade600),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade400),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade400),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.indigo.shade600, width: 2),
+                                ),
+                              ),
+                              obscureText: _obscurePassword,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Ingresa tu contraseña';
+                                }
+                                if (value.length < 6) {
+                                  return 'Mínimo 6 caracteres';
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 24),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: FilledButton(
+                                onPressed: _isLoading ? null : _submit,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.indigo.shade500,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Text(
+                                        'Entrar',
+                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      TextButton(
+                        onPressed: () => context.go('/register'),
+                        child: RichText(
+                          text: TextSpan(
+                            style: TextStyle(color: Colors.grey.shade700),
+                            children: [
+                              const TextSpan(text: '¿No tienes cuenta? '),
+                              TextSpan(
+                                text: 'Crear una',
+                                style: TextStyle(
+                                  color: Colors.indigo.shade600,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
                   ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Iniciar sesión',
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  TextFormField(
-                    decoration: const InputDecoration(
-                      labelText: 'Correo electrónico',
-                      prefixIcon: Icon(Icons.email_outlined),
-                    ),
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Ingresa tu correo';
-                      }
-                      if (!value.contains('@')) {
-                        return 'Correo no válido';
-                      }
-                      return null;
-                    },
-                    onSaved: (value) => _email = value!.trim(),
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    decoration: const InputDecoration(
-                      labelText: 'Contraseña',
-                      prefixIcon: Icon(Icons.lock_outline),
-                    ),
-                    obscureText: true,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Ingresa tu contraseña';
-                      }
-                      if (value.length < 6) {
-                        return 'Mínimo 6 caracteres';
-                      }
-                      return null;
-                    },
-                    onSaved: (value) => _password = value!.trim(),
-                  ),
-                  const SizedBox(height: 32),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: FilledButton(
-                      onPressed: _submit,
-                      child: const Text('Entrar', style: TextStyle(fontSize: 16)),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () => context.go('/register'),
-                    child: const Text('¿No tienes cuenta? Crear una'),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -133,15 +277,19 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   Future<void> _submit() async {
     final form = _formKey.currentState!;
     if (!form.validate()) return;
-    form.save();
+
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+
+    setState(() => _isLoading = true);
 
     final auth = ref.read(firebaseAuthProvider);
     final firestore = ref.read(firestoreProvider);
 
     try {
       final userCredential = await auth.signInWithEmailAndPassword(
-        email: _email,
-        password: _password,
+        email: email,
+        password: password,
       );
       
       // Verificar si el documento del usuario existe, si no, crearlo
@@ -149,25 +297,44 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       final snapshot = await userDoc.get();
       
       if (!snapshot.exists) {
+        // Crear documento si no existe (usuarios legacy de Auth)
+        final defaultName = email.split('@')[0];
         await userDoc.set({
-          'email': _email.toLowerCase().trim(),
-          'name': _email.split('@')[0],
-          'createdAt': DateTime.now().toIso8601String(),
+          'email': email.toLowerCase(),
+          'name': defaultName,
+          'displayName': defaultName,
+          'fcmTokens': [],
+          'createdAt': FieldValue.serverTimestamp(),
         });
+      } else {
+        // Migrar usuarios existentes: agregar campos faltantes
+        final data = snapshot.data() as Map<String, dynamic>;
+        final updates = <String, dynamic>{};
+        if (!data.containsKey('fcmTokens')) updates['fcmTokens'] = [];
+        if (!data.containsKey('displayName')) updates['displayName'] = data['name'] ?? email.split('@')[0];
+        if (updates.isNotEmpty) await userDoc.update(updates);
       }
       
       if (!mounted) return;
       context.go('/home');
     } on FirebaseAuthException catch (e) {
+      setState(() => _isLoading = false);
       final message = e.message ?? e.code;
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red.shade400,
+        ),
       );
     } catch (e) {
+      setState(() => _isLoading = false);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red.shade400,
+        ),
       );
     }
   }

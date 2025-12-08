@@ -30,11 +30,17 @@ dependencies:
   # URL Launcher para llamadas y mapas
   url_launcher: ^6.3.1
   
+  # Mapas (OpenStreetMap)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+  
   # Persistencia de preferencias
   shared_preferences: ^2.3.3
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
   flutter_lints: ^4.0.0
 

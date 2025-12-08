@@ -1,159 +1,200 @@
-# 🚨 WILOBU - SOS Alert System
+# 🚨 WILOBU - Sistema IoT de Seguridad Personal
 
-Sistema wearable de emergencia con GPS + notificaciones automáticas
+Sistema de emergencia para niños con TEA: dispositivo wearable ESP32 + LTE + GPS + App móvil.
 
-## ⚡ Características
-
-- **Botón SOS** con geolocalización automática
-- **Notificaciones Push** a contactos de emergencia
-- **Dispositivo Autónomo** (LTE + GPS)
-- **App Móvil** para monitoreo en tiempo real
-- **Seguridad** HTTPS/TLS end-to-end
-
-## 📁 Componentes
+## 📁 Estructura
 
 ```
-wilobu_app/          → App Flutter (iOS/Android) ⭐ TESTEA ESTO
-wilobu_firmware/     → Firmware C++ (ESP32)
-functions/           → Cloud Functions (FCM Notifications)
-cloudflare-worker/   → Security Proxy
+wilobu_app/          → App Flutter (iOS/Android)
+wilobu_firmware/     → Firmware ESP32 (C++/PlatformIO)
+functions/           → Cloud Functions (Node.js - FCM)
+cloudflare-worker/   → Proxy HTTP→HTTPS para Tier B/C
 ```
 
-## 🚀 Inicio Rápido (PARA EVALUAR EN MÓVIL)
+---
 
-### Requisitos Mínimos
-- Flutter 3.38+
-- Dispositivo Android/iOS conectado (o emulador)
-- Conexión a Internet (para Firebase)
+## 🚀 GUÍA DE EVALUACIÓN
 
-### ⚡ Opción 1: Automático (Recomendado)
+### A. Probar App Móvil (5 min)
 
-**Windows:**
-```bash
-start_app.bat
-```
-
-**macOS/Linux:**
-```bash
-bash start_app.sh
-```
-
-### ⚡ Opción 2: Precompilación + Ejecución
-
-**Windows:**
-```bash
-wilobu_app\precompile.bat
-```
-
-**macOS/Linux:**
-```bash
-bash wilobu_app/precompile.sh
-```
-
-Luego ejecuta:
-```bash
-flutter run
-```
-
-### ⚡ Opción 3: Manual Paso a Paso
-
+**1. Ejecutar app:**
 ```bash
 cd wilobu_app
-
-# Limpiar proyecto (opcional pero recomendado)
-flutter clean
-
-# Instalar dependencias
 flutter pub get
-
-# Ejecutar en dispositivo
 flutter run
-
-# Para ver logs detallados:
-flutter run -v
 ```
 
-### 📱 Qué Esperar
+**2. Flujo de prueba:**
+- Login con email/password cualquiera
+- Dashboard → Botón "+" → Simula vinculación BLE
+- Ver lista de dispositivos
+- Gestión de contactos de emergencia
+- Cambiar tema (Claro/Oscuro/Wilobu)
 
-1. **Primera pantalla:** Login
-   - Email: Cualquier correo (ej: test@example.com)
-   - Contraseña: Cualquier contraseña (sin validación)
-   - Botón: "Conectar"
-
-2. **Dashboard:** Lista de dispositivos
-   - Botón flotante "+" para agregar dispositivo
-   - Botón "Contactos" en la esquina superior
-   - Selector de tema (Claro/Oscuro)
-
-3. **Flujo Completo:**
-   - Login → Dashboard → Agregar Dispositivo (BLE) → Manage Contacts → SOS Alert
-
-## 🔧 Detalles Técnicos
-
-**App Tech Stack:**
-- Flutter 3.38+
-- Riverpod (State Management)
-- Firebase Auth + Firestore
-- GoRouter (Navigation)
-
-**Firmware:**
-- ESP32 + PlatformIO
-- Soporta 3 hardware variants
-- Máquina de estados (7 estados)
-- GPS + LTE + BLE
-
-**Cloud:**
-- Cloud Functions (FCM Multicast)
-- Cloudflare Worker (Security Proxy)
-- Firestore (Real-time Database)
-
-## 📊 Flujo SOS
-
-```
-Usuario presiona botón
-    ↓
-GPS obtiene ubicación
-    ↓
-Envía a Firebase (LTE)
-    ↓
-Cloud Function dispara
-    ↓
-Busca contactos de emergencia
-    ↓
-FCM multicast a contactos
-    ↓
-Contacto recibe notificación + mapa
+**3. Test automatizado:**
+```bash
+flutter test test/features/auth/login_flow_test.dart
 ```
 
-## ✅ Testing Checklist
+---
 
-- [ ] App inicia sin errores
-- [ ] Login funciona
-- [ ] Dashboard muestra estado
-- [ ] Puedo agregar un dispositivo
-- [ ] Gestión de contactos funciona
-- [ ] Notificaciones se reciben (con Cloud Functions)
+### B. Probar Firmware ESP32 (Hardware requerido)
 
-## 🎯 Código Minimalista
+**Hardware soportado:**
+- **Tier A:** LILYGO T-SIM7080G (HTTPS nativo)
+- **Tier B:** ESP32 + A7670SA + Batería (Proxy Cloudflare)
+- **Tier C:** ESP32 + A7670SA sin batería (Lab)
 
-- ✅ Sin documentación innecesaria
-- ✅ Sin comentarios excesivos
-- ✅ Máximo 3000 líneas totales en Flutter
-- ✅ Máximo 500 líneas en Cloud Functions
-- ✅ Máximo 280 líneas en Cloudflare Worker
+**1. Compilar y flashear:**
+```bash
+cd wilobu_firmware
+pio run -t upload
+pio device monitor
+```
 
-## 📞 Soporte
+**2. Configuración crítica:**
+Editar `platformio.ini` y descomentar hardware:
+```ini
+build_flags = 
+    -D HARDWARE_B  # o HARDWARE_A, HARDWARE_C
+```
 
-Consulta el código comentado en:
-- `wilobu_app/lib/main.dart` - Punto de entrada
-- `wilobu_app/lib/features/auth/` - Autenticación
-- `wilobu_app/lib/features/home/` - Dashboard
-- `functions/index.js` - Notificaciones FCM
-- `cloudflare-worker/worker.js` - Proxy seguro
+**3. Flujo de vinculación:**
+- Boot → LED parpadea → Apaga (Idle)
+- Mantener Botón 1 (5s) → LED fijo (BLE Advertising)
+- Conectar desde app → LED parpadea (Handshake)
+- Éxito → LED apaga → Reinicia
+
+**4. Test SOS:**
+- Botón 1 (3s) → SOS General
+- Botón 2 (3s) → SOS Médica
+- Botón 3 (3s) → SOS Seguridad
+- LED alerta parpadea rápido
+- GPS cold start (45s)
+- Envío a Firebase vía LTE
+
+**5. Heartbeat:**
+- Tier A: cada 15 min + Deep Sleep
+- Tier B/C: cada 5 min + Conexión activa
+
+---
+
+### C. Probar Cloudflare Worker (Tier B/C)
+
+**1. Deploy Worker:**
+```bash
+cd cloudflare-worker
+npm install -g wrangler
+wrangler login
+wrangler secret put FIREBASE_API_KEY  # Pegar API Key de Firebase
+wrangler deploy
+```
+
+**2. Actualizar firmware con URL:**
+Copiar URL del deploy (ej. `wilobu-proxy.xxx.workers.dev`) y editar:
+```cpp
+// wilobu_firmware/include/ModemProxy.h línea 14
+const char* proxyUrl = "wilobu-proxy.TU-SUBDOMAIN.workers.dev";
+```
+
+**3. Monitor de logs en tiempo real:**
+```bash
+wrangler tail wilobu-proxy
+```
+
+**4. Test manual:**
+```bash
+curl -X POST https://wilobu-proxy.xxx.workers.dev/heartbeat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deviceId": "TEST123",
+    "ownerUid": "test456",
+    "status": "online",
+    "timestamp": 1234567890,
+    "lastLocation": {
+      "latitude": -33.4489,
+      "longitude": -70.6693,
+      "accuracy": 15.5
+    }
+  }'
+```
+
+**Respuesta esperada (200):**
+```json
+{"success": true, "message": "Device state updated"}
+```
+
+---
+
+### D. Verificar Cloud Functions
+
+**Deploy:**
+```bash
+cd functions
+npm install
+firebase deploy --only functions
+```
+
+**Test notificación SOS:**
+Verificar que al enviar SOS desde hardware:
+1. Worker recibe alerta
+2. Cloud Function `heartbeat` procesa
+3. FCM envía push a contactos
+4. App muestra notificación con mapa
+
+---
+
+## 🐛 Troubleshooting
+
+| Problema | Solución |
+|----------|----------|
+| `flutter run` falla | `flutter clean && flutter pub get` |
+| App no conecta Firebase | Verificar `google-services.json` en `android/app/` |
+| Firmware no compila | Verificar `platformio.ini` tiene solo 1 `HARDWARE_X` |
+| BLE no conecta | Permisos Bluetooth en Android/iOS |
+| Worker 401 | `wrangler secret put FIREBASE_API_KEY` |
+| Heartbeat no funciona | Verificar APN correcto en NVS |
+| GPS sin fix | Esperar 45s cold start al aire libre |
+
+---
+
+## 📊 Arquitectura
+
+```
+[ESP32 + Módem LTE]
+        ↓
+   GPS + Botón SOS
+        ↓
+  ┌─────┴─────┐
+  │           │
+Tier A      Tier B/C
+(HTTPS)     (HTTP → Cloudflare Worker → HTTPS)
+  │           │
+  └─────┬─────┘
+        ↓
+   Firebase Firestore
+        ↓
+  Cloud Functions
+        ↓
+   FCM Multicast
+        ↓
+[App Móvil Contactos]
+```
+
+---
+
+## 📝 Cambios Recientes
+
+### v2.0.1 (2025-12-08)
+- ✅ Fix: Heartbeat no actualizaba `lastHeartbeat` → Enviaba solo 1 vez
+- ✅ Fix: GPS formato inconsistente `lat/lng` → `latitude/longitude`
+- ✅ Fix: Faltaba `timestamp` en heartbeat payload
+- ✅ Cloudflare Worker: Configuración con secrets, no hardcoded
+- ✅ Documentación unificada en README raíz
 
 ---
 
 **Autor:** Osvaldo Díaz  
-**Estado:** ✅ Funcional y Listo para Evaluar  
-**v2.0**
+**Licencia:** MIT  
+**Estado:** ✅ Producción
 

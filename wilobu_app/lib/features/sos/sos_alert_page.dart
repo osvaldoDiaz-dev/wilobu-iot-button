@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:wilobu_app/firebase_providers.dart';
 
@@ -150,12 +152,13 @@ class SosAlertPage extends ConsumerWidget {
                                   style: TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.bold,
+                                    color: Colors.black,
                                   ),
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
                                   sosMessage,
-                                  style: const TextStyle(fontSize: 16),
+                                  style: const TextStyle(fontSize: 16, color: Colors.black),
                                 ),
                               ],
                             ),
@@ -176,7 +179,7 @@ class SosAlertPage extends ConsumerWidget {
                                 Expanded(
                                   child: Text(
                                     adviceMessage,
-                                    style: const TextStyle(fontSize: 14),
+                                    style: const TextStyle(fontSize: 14, color: Colors.black),
                                   ),
                                 ),
                               ],
@@ -203,28 +206,43 @@ class SosAlertPage extends ConsumerWidget {
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
+                                        color: Colors.black,
                                       ),
                                     ),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
-                                Text(locationText),
+                                Text(locationText, style: const TextStyle(color: Colors.black)),
                                 if (latitude != null && longitude != null) ...[
                                   const SizedBox(height: 16),
-                                  Container(
-                                    height: 200,
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey.shade300,
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Center(
-                                      child: Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: SizedBox(
+                                      height: 200,
+                                      child: FlutterMap(
+                                        options: MapOptions(
+                                          initialCenter: LatLng(latitude!, longitude!),
+                                          initialZoom: 15.0,
+                                        ),
                                         children: [
-                                          const Icon(Icons.map, size: 48, color: Colors.grey),
-                                          const SizedBox(height: 8),
-                                          const Text('Mapa (Integrar flutter_map)'),
-                                          Text('$latitude, $longitude'),
+                                          TileLayer(
+                                            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                            userAgentPackageName: 'com.example.wilobu_app',
+                                          ),
+                                          MarkerLayer(
+                                            markers: [
+                                              Marker(
+                                                point: LatLng(latitude!, longitude!),
+                                                width: 50,
+                                                height: 50,
+                                                child: const Icon(
+                                                  Icons.location_on,
+                                                  color: Colors.red,
+                                                  size: 50,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ],
                                       ),
                                     ),
@@ -237,26 +255,7 @@ class SosAlertPage extends ConsumerWidget {
 
                         const SizedBox(height: 24),
 
-                        // Botones de acción
-                        ElevatedButton.icon(
-                          onPressed: () async {
-                            final uri = Uri.parse('tel:911');
-                            if (await canLaunchUrl(uri)) {
-                              await launchUrl(uri);
-                            }
-                          },
-                          icon: const Icon(Icons.phone),
-                          label: const Text('Llamar a Emergencias (911)'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
+                        // Botón de navegación a Google Maps
                         if (latitude != null && longitude != null)
                           ElevatedButton.icon(
                             onPressed: () async {
@@ -267,12 +266,13 @@ class SosAlertPage extends ConsumerWidget {
                                 await launchUrl(uri, mode: LaunchMode.externalApplication);
                               }
                             },
-                            icon: const Icon(Icons.directions),
-                            label: const Text('Cómo llegar'),
+                            icon: const Icon(Icons.navigation),
+                            label: const Text('Abrir en Google Maps'),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blue,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(vertical: 16),
+                              textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                             ),
                           ),
 

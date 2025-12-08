@@ -11,7 +11,11 @@ import 'features/home/presentation/home_page.dart';
 import 'features/devices/presentation/add_device_page.dart';
 import 'features/devices/presentation/device_settings_view.dart';
 import 'features/contacts/presentation/contacts_page.dart';
+import 'features/alerts/presentation/alerts_page.dart';
 import 'features/sos/sos_alert_page.dart';
+
+/// Provider para suspender la redirección automática durante el registro
+final suspendRedirectProvider = StateProvider<bool>((ref) => false);
 
 /// Clase Helper para convertir un Stream (como authStateChanges)
 /// en un Listenable que GoRouter pueda escuchar para refrescar rutas.
@@ -34,6 +38,7 @@ class GoRouterRefreshStream extends ChangeNotifier {
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final auth = ref.watch(firebaseAuthProvider);
+  final suspendRedirect = ref.watch(suspendRedirectProvider);
 
   return GoRouter(
     initialLocation: '/login',
@@ -45,6 +50,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     // Lógica de protección de rutas
     redirect: (context, state) {
       try {
+        // Si la redirección está suspendida (durante el registro), no redirigir
+        if (suspendRedirect) {
+          return null;
+        }
+        
         final user = auth.currentUser;
         final isLoggedIn = user != null;
         
@@ -104,6 +114,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/contacts',
         builder: (context, state) => const ContactsPage(),
+      ),
+      GoRoute(
+        path: '/alerts',
+        builder: (context, state) => const AlertsPage(),
       ),
       GoRoute(
         path: '/sos-alert',

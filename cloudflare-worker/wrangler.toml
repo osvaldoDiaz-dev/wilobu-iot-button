@@ -4,10 +4,6 @@ name = "wilobu-proxy"
 main = "worker.js"
 compatibility_date = "2024-12-01"
 
-# Ruta del Worker
-routes = [
-  { pattern = "wilobu-proxy.workers.dev/*", zone_name = "workers.dev" }
-]
 
 # Variables de entorno (opcional, también pueden ir en el código)
 [vars]

@@ -1,313 +1,356 @@
+#include <Arduino.h>
 #include "ModemProxy.h"
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
-ModemProxy::ModemProxy(HardwareSerial* serial) {
-    modemSerial = serial;
+ModemProxy::ModemProxy(HardwareSerial* serial, const char* apnParam) : modemSerial(serial) {
+    if (apnParam && strlen(apnParam) > 0) apn = String(apnParam);
+    else apn = String("");
 }
 
-// ===== INICIALIZACIÓN =====
-bool ModemProxy::init() {
-    Serial.println("[MODEM-PROXY] Inicializando A7670SA (Tier B/C)...");
-    
-    // Iniciar comunicación serial
-    modemSerial->begin(115200);
-    delay(3000);
-    
-    // Test básico
-    String response = sendATCommand("AT", 1000);
-    if (response.indexOf("OK") == -1) {
-        Serial.println("[MODEM-PROXY] Error: Módulo no responde");
-        return false;
-    }
-    
-    // Desabilitar echo de comandos
-    sendATCommand("ATE0", 1000);
-    
-    // Configurar formato de respuesta
-    sendATCommand("AT+CMGF=1", 1000);
-    
-    // Configurar APN (prepago local - ajustar según país)
-    // Para Chile: movistar, para MX: internet.movistar.com.mx
-    sendATCommand("AT+CGDCONT=1,\"IP\",\"internet\"", 2000);
-    
-    // Activar contexto PDP
-    sendATCommand("AT+CGACT=1,1", 10000);
-    
-    Serial.println("[MODEM-PROXY] A7670SA inicializado correctamente");
-    return true;
-}
-
-// ===== CONEXIÓN A RED =====
-bool ModemProxy::connect() {
-    Serial.println("[MODEM-PROXY] Conectando a red LTE Cat-1...");
-    
-    // Esperar registro en red (máximo 60 segundos)
-    for (int i = 0; i < 60; i++) {
-        String response = sendATCommand("AT+CGREG?", 1000);
-        
-        // +CGREG: 0,1 (conectado, red local)
-        // +CGREG: 0,5 (conectado, roaming)
-        if (response.indexOf("+CGREG: 0,1") != -1 || response.indexOf("+CGREG: 0,5") != -1) {
-            connected = true;
-            Serial.println("[MODEM-PROXY] ✓ Conectado a red celular LTE Cat-1");
-            return true;
-        }
-        
-        if (i % 10 == 0) {
-            Serial.print("[MODEM-PROXY] Esperando conexión... (");
-            Serial.print(i);
-            Serial.println("s)");
-        }
-        
-        delay(1000);
-    }
-    
-    Serial.println("[MODEM-PROXY] ✗ No se pudo conectar a la red");
-    return false;
-}
-
-bool ModemProxy::disconnect() {
-    Serial.println("[MODEM-PROXY] Desconectando de la red...");
-    sendATCommand("AT+CGACT=0,1", 2000);
-    connected = false;
-    return true;
-}
-
-bool ModemProxy::isConnected() {
-    return connected;
-}
-
-// ===== ENVÍO DE DATOS A FIREBASE (VÍA CLOUDFLARE PROXY) =====
-bool ModemProxy::sendToFirebase(const String& path, const String& jsonData) {
-    if (!connected) {
-        Serial.println("[MODEM-PROXY] Error: Sin conexión a la red");
-        return false;
-    }
-    
-    Serial.println("[MODEM-PROXY] Enviando datos via Proxy Cloudflare: " + path);
-    
-    // El A7670SA NO soporta HTTPS bien, por eso usamos HTTP al Worker de Cloudflare
-    // El Worker se encarga de validar, cifrar y reenviar a Firebase
-    
-    String proxyHost = "wilobu-proxy.workers.dev";
-    
-    // Inicializar HTTP
-    sendATCommand("AT+HTTPINIT", 2000);
-    
-    // Configurar URL del proxy
-    sendATCommand("AT+HTTPPARA=\"URL\",\"http://" + proxyHost + "/send\"", 2000);
-    
-    // Configurar Content-Type
-    sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", 2000);
-    
-    // Preparar envío de datos
-    String dataCmd = "AT+HTTPDATA=" + String(jsonData.length()) + ",10000";
-    sendATCommand(dataCmd, 2000);
-    
-    // Enviar JSON
-    modemSerial->println(jsonData);
-    delay(2000);
-    
-    // Ejecutar POST
-    String action = sendATCommand("AT+HTTPACTION=1", 10000);
-    
-    if (action.indexOf("OK") == -1) {
-        Serial.println("[MODEM-PROXY] Error: POST request fallido");
-        sendATCommand("AT+HTTPTERM", 2000);
-        return false;
-    }
-    
-    // Leer respuesta del Proxy
-    delay(2000);
-    String response = sendATCommand("AT+HTTPREAD", 2000);
-    
-    // Terminar sesión HTTP
-    sendATCommand("AT+HTTPTERM", 2000);
-    
-    // Verificar respuesta del Worker
-    if (response.indexOf("success") != -1) {
-        Serial.println("[MODEM-PROXY] ✓ Datos enviados via Proxy exitosamente");
-        return true;
-    } else {
-        Serial.println("[MODEM-PROXY] ✗ Error en respuesta del Proxy");
-        Serial.println("[MODEM-PROXY] Respuesta: " + response);
-        return false;
-    }
-}
-
-// ===== ALERTA SOS =====
-bool ModemProxy::sendSOSAlert(const String& sosType, const GPSLocation& location) {
-    Serial.println("[MODEM-PROXY] Enviando alerta SOS: " + sosType);
-    
-    // Construir JSON de alerta
-    StaticJsonDocument<512> doc;
-    doc["fields"]["status"]["stringValue"] = "sos_" + sosType;
-    doc["fields"]["lastLocation"]["geopointValue"]["latitude"] = location.latitude;
-    doc["fields"]["lastLocation"]["geopointValue"]["longitude"] = location.longitude;
-    doc["fields"]["lastLocation"]["timestampValue"] = location.timestamp;
-    
-    String jsonData;
-    serializeJson(doc, jsonData);
-    
-    // Enviar a Firestore via Proxy
-    return sendToFirebase("/users/{userId}/devices/{deviceId}", jsonData);
-}
-
-// ===== GESTIÓN DE GPS (GNSS) =====
-bool ModemProxy::initGNSS() {
-    Serial.println("[MODEM-PROXY] Inicializando GNSS...");
-    
-    if (gpsEnabled) {
-        Serial.println("[MODEM-PROXY] GNSS ya está habilitado");
-        return true;
-    }
-    
-    // Habilitar GNSS en A7670SA
-    String response = sendATCommand("AT+CGPS=1,1", 5000);
-    
-    if (response.indexOf("OK") != -1) {
-        gpsEnabled = true;
-        Serial.println("[MODEM-PROXY] ✓ GNSS habilitado");
-        return true;
-    }
-    
-    Serial.println("[MODEM-PROXY] ✗ Error al habilitar GNSS");
-    return false;
-}
-
-bool ModemProxy::getLocation(GPSLocation& location) {
-    if (!gpsEnabled) {
-        if (!initGNSS()) {
-            return false;
-        }
-    }
-    
-    // Obtener última posición conocida
-    String response = sendATCommand("AT+CGPSINF=0", 2000);
-    
-    // Parsear respuesta: +CGPSINF: <gps_run>,<fix_stat>,<utc_date>,<utc_time>,<latitude>,<longitude>,<altitude>,<speed>,<course>,<fix_mode>
-    
-    // Buscar las coordenadas en la respuesta
-    if (response.indexOf("+CGPSINF") != -1) {
-        // Simular posición por ahora (TODO: parsear correctamente)
-        location.latitude = -33.8688;      // Santiago, Chile (ejemplo)
-        location.longitude = -51.2093;
-        location.accuracy = 10.0;          // 10 metros
-        location.timestamp = millis();
-        location.isValid = true;
-        
-        Serial.print("[MODEM-PROXY] ✓ Posición: ");
-        Serial.print(location.latitude);
-        Serial.print(", ");
-        Serial.println(location.longitude);
-        
-        return true;
-    }
-    
-    Serial.println("[MODEM-PROXY] ✗ No se pudo obtener la posición");
-    location.isValid = false;
-    return false;
-}
-
-void ModemProxy::disableGNSS() {
-    if (gpsEnabled) {
-        Serial.println("[MODEM-PROXY] Deshabilitando GNSS...");
-        sendATCommand("AT+CGPS=0", 2000);
-        gpsEnabled = false;
-    }
-}
-
-// ===== GESTIÓN DE ENERGÍA =====
-void ModemProxy::enableDeepSleep(unsigned long wakeupTimeSeconds) {
-    Serial.print("[MODEM-PROXY] Entrando en Deep Sleep por ");
-    Serial.print(wakeupTimeSeconds);
-    Serial.println(" segundos...");
-    
-    // Desabilitar comunicación
-    if (connected) {
-        disconnect();
-    }
-    
-    disableGNSS();
-    
-    deepSleeping = true;
-    
-    // Usar el RTC del ESP32 para despertar
-    // esp_sleep_enable_timer_wakeup(wakeupTimeSeconds * 1000000ULL);
-    // esp_deep_sleep_start();
-}
-
-bool ModemProxy::isDeepSleeping() {
-    return deepSleeping;
-}
-
-// ===== ACTUALIZACIÓN OTA =====
-bool ModemProxy::checkForUpdates() {
-    Serial.println("[MODEM-PROXY] Verificando actualizaciones de firmware...");
-    
-    if (!connected) {
-        if (!connect()) {
-            return false;
-        }
-    }
-    
-    // Obtener versión actual (almacenada en NVS)
-    // TODO: Implementar lectura de versión actual
-    
-    // Consultar Firestore para obtener targetFirmwareVersion
-    // TODO: Implementar consulta a sistema/latest via Proxy
-    
-    return false;
-}
-
-bool ModemProxy::downloadFirmwareUpdate(const String& url) {
-    Serial.println("[MODEM-PROXY] Descargando actualización desde: " + url);
-    
-    // TODO: Implementar descarga usando HTTP GET
-    // Guardar en SPIFFS o memoria externa
-    
-    return false;
-}
-
-bool ModemProxy::applyFirmwareUpdate() {
-    Serial.println("[MODEM-PROXY] Aplicando actualización de firmware...");
-    
-    // TODO: Implementar actualización usando ESP32.Update
-    
-    return false;
-}
-
-// ===== MÉTODOS AUXILIARES =====
+// ===== AT COMMAND =====
 String ModemProxy::sendATCommand(const String& cmd, unsigned long timeout) {
-    // Limpiar buffer serial
-    while (modemSerial->available()) {
-        modemSerial->read();
-    }
+    while (modemSerial->available()) modemSerial->read();  // Limpiar buffer
     
-    Serial.print("[AT-CMD] >> ");
+    Serial.print("[AT] Enviando: ");
     Serial.println(cmd);
     
-    // Enviar comando
     modemSerial->println(cmd);
     
-    // Esperar respuesta
+    String r = "";
     unsigned long start = millis();
-    String response = "";
-    
     while (millis() - start < timeout) {
         if (modemSerial->available()) {
-            char c = modemSerial->read();
-            response += c;
-            Serial.write(c);  // Mostrar en monitor serial
+            char c = (char)modemSerial->read();
+            r += c;
         }
     }
     
-    Serial.println();
-    return response;
+    if (r.length() > 0) {
+        Serial.print("[AT] Recibido: ");
+        Serial.println(r);
+    }
+    
+    return r;
 }
 
 bool ModemProxy::waitForResponse(const String& expected, unsigned long timeout) {
-    String response = sendATCommand("AT+CGREG?", timeout);
-    return response.indexOf(expected) != -1;
+    return sendATCommand("AT", timeout).indexOf(expected) != -1;
 }
+
+// ===== INIT & CONNECT =====
+bool ModemProxy::init() {
+    // NO llamar begin() aquí - ya se configuró en main.cpp con los pines correctos
+    delay(3000);
+    
+    // Intentar varias veces con AT
+    Serial.println("[MODEM] Probando comunicacion AT...");
+    for (int i = 0; i < 5; i++) {
+        String r = sendATCommand("AT", 2000);
+        if (r.indexOf("OK") != -1) {
+            Serial.println("[MODEM] Comunicacion AT OK");
+            break;
+        }
+        Serial.print("[MODEM] Intento ");
+        Serial.print(i+1);
+        Serial.println(" sin respuesta");
+        if (i == 4) {
+            Serial.println("[MODEM] Sin respuesta AT");
+            return false;
+        }
+        delay(1000);
+    }
+    
+    sendATCommand("ATE0", 1000);
+    sendATCommand("AT+CMGF=1", 1000);
+    sendATCommand("AT+CGDCONT=1,\"IP\",\"" + String(apn) + "\"", 2000);
+    sendATCommand("AT+CGACT=1,1", 10000);
+    
+    Serial.println("[MODEM] A7670SA inicializado");
+    return true;
 }
+
+bool ModemProxy::connect() {
+    Serial.println("[MODEM] Esperando registro en red...");
+    for (int i = 0; i < 30; i++) {
+        String r = sendATCommand("AT+CGREG?", 1000);
+        
+        if (r.indexOf("+CGREG: 0,1") != -1 || r.indexOf("+CGREG: 0,5") != -1) {
+            Serial.println("[MODEM] Registrado en red");
+            connected = true;
+            return true;
+        }
+        Serial.print(".");
+        delay(2000);
+    }
+    Serial.println();
+    Serial.println("[MODEM] Timeout registro red");
+    return false;
+}
+
+bool ModemProxy::disconnect() { sendATCommand("AT+CGACT=0,1", 2000); connected = false; return true; }
+bool ModemProxy::isConnected() { return connected; }
+
+// ===== HTTP POST =====
+String ModemProxy::httpPost(const String& path, const String& json) {
+    if (!connected) {
+        Serial.println("[HTTP] Error: No conectado");
+        return "";
+    }
+    
+    sendATCommand("AT+HTTPTERM", 500);
+    if (sendATCommand("AT+HTTPINIT", 2000).indexOf("OK") == -1) {
+        Serial.println("[HTTP] Error: HTTPINIT fallo");
+        return "";
+    }
+    
+    String httpUrl = "http://" + String(proxyUrl) + path;
+    String httpsUrl = "https://" + String(proxyUrl) + path;
+    Serial.print("[HTTP] POST -> "); Serial.println(httpUrl);
+
+    // Basic HTTP parameters: use PDP context CID=1 and allow redirects
+    sendATCommand("AT+HTTPPARA=\"CID\",1", 1000);
+    sendATCommand("AT+HTTPPARA=\"REDIR\",1", 1000);
+    sendATCommand("AT+HTTPPARA=\"UA\",\"Wilobu/1.0\"", 1000);
+    sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", 1000);
+
+    String url = httpUrl;
+    String dataCmd = "AT+HTTPDATA=" + String(json.length()) + ",10000";
+    String dataResp;
+    bool triedHttps = false;
+
+retry_http:
+    // set URL for this attempt
+    sendATCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", 2000);
+
+    dataResp = sendATCommand(dataCmd, 2000);
+    if (dataResp.indexOf("DOWNLOAD") == -1) {
+        Serial.println("[HTTP] Error: HTTPDATA no acepto datos");
+        sendATCommand("AT+HTTPTERM", 1000);
+        return "";
+    }
+
+    modemSerial->println(json);
+    delay(1000);
+
+    String action = sendATCommand("AT+HTTPACTION=1", 15000);
+    Serial.print("[HTTP] Response: "); Serial.println(action);
+
+    // Parse +HTTPACTION: <method>,<status>,<len>
+    int idx = action.indexOf("+HTTPACTION:");
+    int httpStatus = -1;
+    if (idx != -1) {
+        String tail = action.substring(idx);
+        int c1 = tail.indexOf(',');
+        if (c1 != -1) {
+            int c2 = tail.indexOf(',', c1 + 1);
+            if (c2 != -1) {
+                String statusStr = tail.substring(c1 + 1, c2);
+                statusStr.trim();
+                httpStatus = statusStr.toInt();
+                Serial.printf("[HTTP] Status parsed: %d\n", httpStatus);
+            }
+        }
+    }
+
+    // If not 2xx, try HTTPS fallback once
+    if (httpStatus < 200 || httpStatus >= 300) {
+        Serial.println("[HTTP] Error: Status not 2xx");
+        Serial.print("[HTTP] Numeric status: "); Serial.println(httpStatus);
+
+        // Try to read any body for diagnostics
+        String body = sendATCommand("AT+HTTPREAD", 3000);
+        if (body.length() > 0) {
+            Serial.print("[HTTP] Body on error: "); Serial.println(body);
+        }
+
+        // Persist diagnostics in NVS for later inspection
+        {
+            Preferences prefs;
+            prefs.begin("wilobu", false);
+            prefs.putString("last_http_action", action);
+            prefs.putString("last_http_read", body);
+            prefs.putString("last_http_status", String(httpStatus));
+            prefs.end();
+        }
+
+        if (!triedHttps) {
+            triedHttps = true;
+            // Try enable SSL mode (may not be supported on all firmwares)
+            Serial.println("[HTTP] Intentando fallback a HTTPS...");
+            sendATCommand("AT+HTTPTERM", 1000);
+            String sslResp = sendATCommand("AT+HTTPSSL=1", 2000);
+            Serial.print("[HTTP] AT+HTTPSSL response: "); Serial.println(sslResp);
+            if (sendATCommand("AT+HTTPINIT", 2000).indexOf("OK") == -1) {
+                Serial.println("[HTTP] Error: HTTPINIT fallo en HTTPS fallback");
+                return "";
+            }
+            url = httpsUrl;
+            goto retry_http;
+        }
+
+        sendATCommand("AT+HTTPTERM", 1000);
+        return "";
+    }
+
+    String response = sendATCommand("AT+HTTPREAD", 3000);
+    // Save successful request diagnostics
+    {
+        Preferences prefs;
+        prefs.begin("wilobu", false);
+        prefs.putString("last_http_action", action);
+        prefs.putString("last_http_read", response);
+        prefs.putString("last_http_status", String(httpStatus));
+        prefs.end();
+    }
+    sendATCommand("AT+HTTPTERM", 1000);
+    return response;
+}
+
+bool ModemProxy::sendToFirebase(const String& path, const String& json) { return !httpPost("/send", json).isEmpty(); }
+bool ModemProxy::sendToFirebaseFunction(const String& path, const String& json) { return !httpPost(path, json).isEmpty(); }
+
+// ===== SOS & HEARTBEAT =====
+bool ModemProxy::sendSOSAlert(const String& sosType, const GPSLocation& loc) {
+    JsonDocument doc;
+    doc["deviceId"] = "";
+    doc["ownerUid"] = "";
+    doc["status"] = "sos_" + sosType;
+    doc["sosType"] = sosType;
+    if (loc.isValid) {
+        doc["lastLocation"]["latitude"] = loc.latitude;
+        doc["lastLocation"]["longitude"] = loc.longitude;
+        doc["lastLocation"]["accuracy"] = loc.accuracy;
+    }
+    String json; serializeJson(doc, json);
+    return !httpPost("/send", json).isEmpty();
+}
+
+bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& loc) {
+    JsonDocument doc;
+    doc["deviceId"] = deviceId;
+    doc["ownerUid"] = ownerUid;
+    doc["status"] = "online";
+    doc["timestamp"] = millis();
+    if (loc.isValid) {
+        doc["lastLocation"]["latitude"] = loc.latitude;
+        doc["lastLocation"]["longitude"] = loc.longitude;
+        doc["lastLocation"]["accuracy"] = loc.accuracy;
+    }
+    String json; serializeJson(doc, json);
+    String response = httpPost("/heartbeat", json);
+    if (response.isEmpty()) {
+        Serial.println("[HEARTBEAT] Error: respuesta vacía. Recuperando diagnósticos NVS...");
+        Preferences prefs;
+        prefs.begin("wilobu", true); // read-only
+        String action = prefs.getString("last_http_action", "");
+        String read = prefs.getString("last_http_read", "");
+        String status = prefs.getString("last_http_status", "");
+        prefs.end();
+
+        if (action.length() > 0) {
+            Serial.print("[HEARTBEAT DIAG] last_http_action: "); Serial.println(action);
+        }
+        if (status.length() > 0) {
+            Serial.print("[HEARTBEAT DIAG] last_http_status: "); Serial.println(status);
+        }
+        if (read.length() > 0) {
+            Serial.print("[HEARTBEAT DIAG] last_http_read: "); Serial.println(read);
+        }
+
+        return false;
+    }
+    // Check for cmd_reset in response
+    if (response.indexOf("\"cmd_reset\":true") != -1) {
+        Serial.println("[HEARTBEAT] ⚠️ cmd_reset detectado - Factory Reset");
+        factoryResetPending = true;
+    }
+    return true;
+}
+
+// ===== GPS =====
+bool ModemProxy::initGNSS() {
+    if (gpsEnabled) return true;
+    // Try several common GNSS enable commands for different modules
+    const char* cmds[] = { "AT+CGPS=1,1", "AT+CGNSPWR=1", "AT+QGPS=1" };
+    for (int i = 0; i < (int)(sizeof(cmds)/sizeof(cmds[0])); ++i) {
+        String r = sendATCommand(String(cmds[i]), 5000);
+        if (r.indexOf("OK") != -1) {
+            gpsEnabled = true;
+            return true;
+        }
+    }
+    gpsEnabled = false;
+    return false;
+}
+
+bool ModemProxy::getLocation(GPSLocation& loc) {
+    if (!gpsEnabled && !initGNSS()) return false;
+    String r = sendATCommand("AT+CGPSINF=0", 2000);
+    if (r.indexOf("+CGPSINF") == -1) { loc.isValid = false; return false; }
+
+    int colon = r.indexOf(":");
+    String payload = colon != -1 ? r.substring(colon + 1) : r;
+    payload.replace("\r", "");
+    payload.replace("\n", "");
+    payload.trim();
+
+    int modeSep = payload.indexOf(',');
+    if (modeSep != -1) payload = payload.substring(modeSep + 1);
+
+    char buf[160];
+    payload.toCharArray(buf, sizeof(buf));
+    char* save;
+    char* token = strtok_r(buf, ",", &save);
+    if (!token) { loc.isValid = false; return false; }
+    String latStr(token);
+
+    token = strtok_r(nullptr, ",", &save);
+    if (!token) { loc.isValid = false; return false; }
+    String next(token);
+
+    String lonStr;
+    String latDir;
+    String lonDir;
+
+    if (next.length() == 1 && !isdigit(next[0])) {
+        latDir = next;
+        lonStr = String(strtok_r(nullptr, ",", &save) ?: "");
+        lonDir = String(strtok_r(nullptr, ",", &save) ?: "");
+    } else {
+        lonStr = next;
+        lonDir = String(strtok_r(nullptr, ",", &save) ?: "");
+    }
+
+    auto toDecimal = [&](const String& val, const String& dir) {
+        if (val.isEmpty()) return 0.0f;
+        float raw = val.toFloat();
+        float decimal;
+        int dot = val.indexOf('.');
+        if (dot >= 0 && dot <= 2) {
+            decimal = raw;
+        } else {
+            int deg = (int)(raw / 100);
+            float minutes = raw - (deg * 100);
+            decimal = deg + (minutes / 60.0f);
+        }
+        if (dir.equalsIgnoreCase("S") || dir.equalsIgnoreCase("W")) decimal *= -1.0f;
+        return decimal;
+    };
+
+    loc.latitude = toDecimal(latStr, latDir);
+    loc.longitude = toDecimal(lonStr, lonDir);
+    loc.accuracy = 10.0;
+    loc.timestamp = millis();
+    loc.isValid = (loc.latitude != 0.0f || loc.longitude != 0.0f);
+    return loc.isValid;
+}
+
+void ModemProxy::disableGNSS() { if (gpsEnabled) { sendATCommand("AT+CGPS=0", 2000); gpsEnabled = false; } }
+
+// ===== POWER & OTA STUBS =====
+void ModemProxy::enableDeepSleep(unsigned long sec) { if (connected) disconnect(); disableGNSS(); deepSleeping = true; }
+bool ModemProxy::isDeepSleeping() { return deepSleeping; }
+bool ModemProxy::checkForUpdates() { return false; }
+bool ModemProxy::downloadFirmwareUpdate(const String& url) { return false; }
+bool ModemProxy::applyFirmwareUpdate() { return false; }

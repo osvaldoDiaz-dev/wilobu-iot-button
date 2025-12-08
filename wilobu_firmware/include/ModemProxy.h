@@ -10,8 +10,8 @@ private:
     HardwareSerial* modemSerial;
     bool connected = false;
     bool deepSleeping = false;
-    const char* apn = "";  // APN prepago local (será configurado)
-    const char* proxyUrl = "http://wilobu-proxy.workers.dev";  // Cloudflare Worker
+    String apn = "";  // APN prepago local (será configurado)
+    const char* proxyUrl = "wilobu-proxy.workers.dev";  // Cloudflare Worker
     
     // Variables GPS
     float latitude = 0.0;
@@ -22,9 +22,12 @@ private:
     // Métodos auxiliares
     String sendATCommand(const String& cmd, unsigned long timeout);
     bool waitForResponse(const String& expected, unsigned long timeout);
+    String httpPost(const String& path, const String& json);
     
 public:
-    ModemProxy(HardwareSerial* serial);
+    bool factoryResetPending = false;  // Flag para factory reset desde cloud
+    
+    ModemProxy(HardwareSerial* serial, const char* apnParam = nullptr);
     
     // Implementación de métodos de IModem
     bool init() override;
@@ -34,6 +37,8 @@ public:
     
     bool sendToFirebase(const String& path, const String& jsonData) override;
     bool sendSOSAlert(const String& sosType, const GPSLocation& location) override;
+    bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) override;
+    bool sendToFirebaseFunction(const String& functionPath, const String& jsonData);
     
     bool initGNSS() override;
     bool getLocation(GPSLocation& location) override;

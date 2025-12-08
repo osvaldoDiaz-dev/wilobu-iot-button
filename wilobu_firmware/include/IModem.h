@@ -26,7 +26,7 @@ struct GPSLocation {
 // === CLASE ABSTRACTA BASE PARA MÓDEMS ===
 class IModem {
 public:
-    virtual ~IModem() {}
+    virtual ~IModem() = default;
     
     // ===== MÉTODOS DE INICIALIZACIÓN =====
     virtual bool init() = 0;
@@ -37,6 +37,7 @@ public:
     // ===== MÉTODOS DE ENVÍO DE DATOS =====
     virtual bool sendToFirebase(const String& path, const String& jsonData) = 0;
     virtual bool sendSOSAlert(const String& sosType, const GPSLocation& location) = 0;
+    virtual bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) = 0;
     
     // ===== MÉTODOS DE POSICIONAMIENTO =====
     virtual bool initGNSS() = 0;

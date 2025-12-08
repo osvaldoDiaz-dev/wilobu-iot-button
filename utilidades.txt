@@ -1,0 +1,22 @@
+Lista de utilidades:
+
+Usuario de prueba:
+Email	wilobu.test@gmail.com
+Contraseña	WilobuTest2025!
+UID	7TUEUXvKYiXMPbsanVzN5iaorGI2
+
+Flasheo y monitoreo manual de Firmware:
+cd c:\Users\elbar\Desktop\wilobu\wilobu_firmware; python -m platformio run --target upload; python -m platformio device monitor --baud 115200
+
+Instalación manual de app móvil:
+cd wilobu_app
+flutter clean
+flutter pub get
+flutter run
+
+Errores:
+cd wilobu_app
+flutter doctor
+flutter pub outdated
+flutter pub upgrade --major-versions
+

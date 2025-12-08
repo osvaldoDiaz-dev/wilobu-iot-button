@@ -1,0 +1,14 @@
+{
+  "name": "wilobu-proxy",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker proxy HTTP->HTTPS para Wilobu Tier B/C",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": ["cloudflare", "worker", "wilobu", "iot"],
+  "author": "Wilobu Team",
+  "license": "MIT"
+}
