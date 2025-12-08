@@ -106,6 +106,64 @@ class _DeviceListCardState extends State<_DeviceListCard> {
     if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
+  Future<void> _showExpandedMap() async {
+    if (widget.lat == null || widget.lng == null) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 320,
+                width: double.infinity,
+                child: FlutterMap(
+                  options: MapOptions(
+                    initialCenter: LatLng(widget.lat!, widget.lng!),
+                    initialZoom: 15,
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.wilobu_app',
+                    ),
+                    MarkerLayer(markers: [
+                      Marker(
+                        point: LatLng(widget.lat!, widget.lng!),
+                        child: const Icon(Icons.location_pin, color: Colors.red, size: 42),
+                      ),
+                    ]),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.map_outlined, size: 18),
+                        label: const Text('Abrir en Google Maps'),
+                        onPressed: _openInMaps,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasLocation = widget.lat != null && widget.lng != null;
@@ -771,17 +829,18 @@ class _MyDeviceCardState extends ConsumerState<_MyDeviceCard> {
             .collection('devices')
             .doc(widget.device.id);
         
-        // Marcar cmd_reset para que el firmware haga factory reset
-        await deviceDoc.update({
+        // Marcar cmd_reset y dejar el documento para que el backend responda 410 al firmware
+        await deviceDoc.set({
           'cmd_reset': true,
           'provisioned': false,
           'reset_requested_at': FieldValue.serverTimestamp(),
-        });
+          'status': 'offline',
+        }, SetOptions(merge: true));
         
-        // Esperar 3 segundos para que el firmware reciba el comando
+        // Esperar a que el firmware reciba el comando
         await Future.delayed(const Duration(seconds: 3));
-        
-        // Eliminar el documento de Firestore
+
+        // Borrar el documento para que desaparezca del dashboard (el backend ya enviará 410 si el heartbeat llegó antes)
         await deviceDoc.delete();
         
         if (mounted) {
@@ -810,6 +869,83 @@ class _MyDeviceCardState extends ConsumerState<_MyDeviceCard> {
     if (widget.device.lat == null || widget.device.lng == null) return;
     final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${widget.device.lat},${widget.device.lng}');
     if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _showExpandedMap() async {
+    if (widget.device.lat == null || widget.device.lng == null) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: SizedBox(
+            height: 420,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: FlutterMap(
+                    options: MapOptions(
+                      initialCenter: LatLng(widget.device.lat!, widget.device.lng!),
+                      initialZoom: 16,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.example.wilobu_app',
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: LatLng(widget.device.lat!, widget.device.lng!),
+                            width: 50,
+                            height: 50,
+                            child: const Icon(Icons.location_on, color: Colors.red, size: 50),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  top: 12,
+                  right: 12,
+                  child: IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ),
+                Positioned(
+                  bottom: 12,
+                  right: 12,
+                  child: Column(
+                    children: [
+                      FloatingActionButton(
+                        heroTag: 'mydevice_expand_${widget.device.id}',
+                        mini: true,
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Icon(Icons.fullscreen_exit),
+                      ),
+                      const SizedBox(height: 12),
+                      FloatingActionButton(
+                        heroTag: 'mydevice_maps_${widget.device.id}',
+                        mini: true,
+                        onPressed: () async {
+                          final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${widget.device.lat},${widget.device.lng}');
+                          if (await canLaunchUrl(uri)) {
+                            await launchUrl(uri, mode: LaunchMode.externalApplication);
+                          }
+                        },
+                        child: const Icon(Icons.open_in_new),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -873,17 +1009,31 @@ class _MyDeviceCardState extends ConsumerState<_MyDeviceCard> {
         if (_isExpanded) ...[
           const Divider(height: 1),
           if (hasLocation) SizedBox(height: 180, child: Stack(children: [
-            FlutterMap(
-              options: MapOptions(initialCenter: LatLng(device.lat!, device.lng!), initialZoom: 15,
-                interactionOptions: const InteractionOptions(flags: InteractiveFlag.none)),
-              children: [
-                TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.wilobu_app'),
-                MarkerLayer(markers: [Marker(point: LatLng(device.lat!, device.lng!),
-                  child: const Icon(Icons.location_pin, color: Colors.red, size: 40))]),
-              ],
+            GestureDetector(
+              onTap: _showExpandedMap,
+              child: AbsorbPointer(
+                child: FlutterMap(
+                  options: MapOptions(initialCenter: LatLng(device.lat!, device.lng!), initialZoom: 15,
+                    interactionOptions: const InteractionOptions(flags: InteractiveFlag.none)),
+                  children: [
+                    TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.wilobu_app'),
+                    MarkerLayer(markers: [Marker(point: LatLng(device.lat!, device.lng!),
+                      child: const Icon(Icons.location_pin, color: Colors.red, size: 40))]),
+                  ],
+                ),
+              ),
             ),
-            Positioned(right: 8, bottom: 8, child: FloatingActionButton.small(
-              heroTag: 'map_${device.id}', onPressed: _openInMaps, child: const Icon(Icons.open_in_new, size: 18))),
+            Positioned(right: 8, bottom: 8, child: Row(children: [
+              FloatingActionButton.small(
+                heroTag: 'map_full_${device.id}',
+                onPressed: _showExpandedMap,
+                child: const Icon(Icons.zoom_out_map, size: 18)),
+              const SizedBox(width: 8),
+              FloatingActionButton.small(
+                heroTag: 'map_open_${device.id}',
+                onPressed: _openInMaps,
+                child: const Icon(Icons.open_in_new, size: 18)),
+            ])),
           ]))
           else Container(height: 100, color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
             child: const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [

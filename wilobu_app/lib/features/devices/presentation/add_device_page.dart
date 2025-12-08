@@ -46,24 +46,49 @@ class _AddDevicePageState extends ConsumerState<AddDevicePage> {
       final user = ref.read(firebaseAuthProvider).currentUser;
       if (user == null) throw Exception('Usuario no autenticado');
       
+      print('[ADD_DEVICE] Usuario autenticado: ${user.uid}');
+      
       // Usar el servicio BLE para aprovisionar el dispositivo
       final bleService = ref.read(bleServiceProvider);
       final deviceId = await bleService.provisionDevice(device, user.uid);
       
+      print('[ADD_DEVICE] DeviceID recibido del firmware: $deviceId');
+      
+      // Validar deviceId (12 hex)
+      if (!RegExp(r'^[0-9A-F]{12}$').hasMatch(deviceId)) {
+        throw Exception('ID de dispositivo inválido recibido: $deviceId');
+      }
+      
+      print('[ADD_DEVICE] DeviceID validado, creando documento en Firestore...');
+      
       // Crear documento del dispositivo en Firestore (usar el ID real entregado por firmware)
       final firestore = ref.read(firestoreProvider);
+      final deviceRef = firestore.collection('users').doc(user.uid).collection('devices').doc(deviceId);
       
-      await firestore.collection('users').doc(user.uid).collection('devices').doc(deviceId).set({
+      print('[ADD_DEVICE] Ruta: users/${user.uid}/devices/$deviceId');
+      
+      await deviceRef.set({
         'deviceId': deviceId,
         'name': device.platformName,
         'ownerUid': user.uid,
         'status': 'online',
+        'provisioned': true,
         'lastSeen': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
         'viewers': [], // Array of viewer objects {uid, name, email}
         'viewerUids': [], // Array of viewer UIDs for security rules
         'emergencyContacts': [], // Array of emergency contact UIDs
       });
+      
+      print('[ADD_DEVICE] Documento creado, verificando...');
+      
+      // Validar que el documento se creó correctamente
+      final docCheck = await deviceRef.get();
+      if (!docCheck.exists) {
+        throw Exception('Error: El documento del dispositivo no se creó correctamente. Reintenta.');
+      }
+      
+      print('[ADD_DEVICE] ✓ Vinculación completada exitosamente');
       
       if(mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -75,6 +100,7 @@ class _AddDevicePageState extends ConsumerState<AddDevicePage> {
         context.pop();
       }
     } catch (e) {
+      print('[ADD_DEVICE] ✗ Error durante vinculación: $e');
       if(mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

@@ -18,6 +18,88 @@ class SosAlertPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    void _showExpandedMap(double lat, double lng) {
+      showDialog(
+        context: context,
+        builder: (dialogContext) {
+          return Dialog(
+            insetPadding: const EdgeInsets.all(16),
+            child: SizedBox(
+              height: 420,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: FlutterMap(
+                      options: MapOptions(
+                        initialCenter: LatLng(lat, lng),
+                        initialZoom: 16,
+                      ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.example.wilobu_app',
+                        ),
+                        MarkerLayer(
+                          markers: [
+                            Marker(
+                              point: LatLng(lat, lng),
+                              width: 50,
+                              height: 50,
+                              child: const Icon(
+                                Icons.location_on,
+                                color: Colors.red,
+                                size: 50,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    top: 12,
+                    right: 12,
+                    child: IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                    ),
+                  ),
+                  Positioned(
+                    bottom: 12,
+                    right: 12,
+                    child: Column(
+                      children: [
+                        FloatingActionButton(
+                          heroTag: 'sos_expand_dialog',
+                          mini: true,
+                          onPressed: () => Navigator.of(dialogContext).pop(),
+                          child: const Icon(Icons.fullscreen_exit),
+                        ),
+                        const SizedBox(height: 12),
+                        FloatingActionButton(
+                          heroTag: 'sos_maps_dialog',
+                          mini: true,
+                          onPressed: () async {
+                            final uri = Uri.parse(
+                              'https://www.google.com/maps/dir/?api=1&destination=$lat,$lng',
+                            );
+                            if (await canLaunchUrl(uri)) {
+                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                            }
+                          },
+                          child: const Icon(Icons.open_in_new),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
+
     // Stream del dispositivo para obtener datos en tiempo real
     final deviceStream = ref.watch(firestoreProvider)
         .collection('users')
@@ -215,35 +297,72 @@ class SosAlertPage extends ConsumerWidget {
                                 Text(locationText, style: const TextStyle(color: Colors.black)),
                                 if (latitude != null && longitude != null) ...[
                                   const SizedBox(height: 16),
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: SizedBox(
-                                      height: 200,
-                                      child: FlutterMap(
-                                        options: MapOptions(
-                                          initialCenter: LatLng(latitude!, longitude!),
-                                          initialZoom: 15.0,
-                                        ),
-                                        children: [
-                                          TileLayer(
-                                            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                            userAgentPackageName: 'com.example.wilobu_app',
-                                          ),
-                                          MarkerLayer(
-                                            markers: [
-                                              Marker(
-                                                point: LatLng(latitude!, longitude!),
-                                                width: 50,
-                                                height: 50,
-                                                child: const Icon(
-                                                  Icons.location_on,
-                                                  color: Colors.red,
-                                                  size: 50,
+                                  GestureDetector(
+                                    onTap: () => _showExpandedMap(latitude!, longitude!),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: SizedBox(
+                                        height: 200,
+                                        child: Stack(
+                                          children: [
+                                            Positioned.fill(
+                                              child: FlutterMap(
+                                                options: MapOptions(
+                                                  initialCenter: LatLng(latitude!, longitude!),
+                                                  initialZoom: 15.0,
                                                 ),
+                                                children: [
+                                                  TileLayer(
+                                                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                                    userAgentPackageName: 'com.example.wilobu_app',
+                                                  ),
+                                                  MarkerLayer(
+                                                    markers: [
+                                                      Marker(
+                                                        point: LatLng(latitude!, longitude!),
+                                                        width: 50,
+                                                        height: 50,
+                                                        child: const Icon(
+                                                          Icons.location_on,
+                                                          color: Colors.red,
+                                                          size: 50,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
                                               ),
-                                            ],
-                                          ),
-                                        ],
+                                            ),
+                                            Positioned(
+                                              bottom: 12,
+                                              right: 12,
+                                              child: Column(
+                                                children: [
+                                                  FloatingActionButton(
+                                                    heroTag: 'sos_expand_card',
+                                                    mini: true,
+                                                    onPressed: () => _showExpandedMap(latitude!, longitude!),
+                                                    child: const Icon(Icons.zoom_out_map),
+                                                  ),
+                                                  const SizedBox(height: 12),
+                                                  FloatingActionButton(
+                                                    heroTag: 'sos_maps_card',
+                                                    mini: true,
+                                                    onPressed: () async {
+                                                      final uri = Uri.parse(
+                                                        'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude'
+                                                      );
+                                                      if (await canLaunchUrl(uri)) {
+                                                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                                      }
+                                                    },
+                                                    child: const Icon(Icons.open_in_new),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
                                   ),

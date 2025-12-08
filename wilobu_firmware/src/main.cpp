@@ -61,6 +61,10 @@ int logLevel = 1; // 0=ERROR, 1=INFO, 2=DEBUG (configurable)
   #define HEARTBEAT_INTERVAL     300000UL // 5 minutos (Tier B/C)
 #endif
 
+// Ventana inicial para detectar desprovisionamiento rapido tras un unlink
+#define HEARTBEAT_EARLY_WINDOW_MS 300000UL // 5 minutos
+#define HEARTBEAT_FAST_INTERVAL   30000UL  // 30s en ventana inicial o cuando provisioned=false
+
 // ===== MÁQUINA DE ESTADOS =====
 // Controla el modo global del dispositivo
 DeviceState deviceState = DeviceState::PROVISIONING;
@@ -79,6 +83,11 @@ String modemApn = "";
 String wifiSSID = "";
 String wifiPassword = "";
 bool isProvisioned = false;
+bool lastHeartbeatOk = false; // true solo cuando el heartbeat recibe 2xx
+unsigned long bootTimestamp = 0;
+
+// Ventana de parpadeo en arranque para dispositivos sin provisionar
+const unsigned long UNPROV_BLINK_WINDOW_MS = 15000UL; // 15s de "estoy vivo"
 
 // Localización
 GPSLocation lastLocation = {0.0, 0.0, 999.0, 0, false};
@@ -158,12 +167,16 @@ void setupBLE() {
     );
     pCharOwner->setCallbacks(new OwnerUIDCallbacks());
     
-    // CaracterÇðstica de solo lectura para exponer el DeviceID real al mÇüvil
+    // Característica de solo lectura para exponer el DeviceID real al móvil
     NimBLECharacteristic* pCharDeviceId = pService->createCharacteristic(
         CHAR_DEVICE_ID_UUID,
         NIMBLE_PROPERTY::READ
     );
-    pCharDeviceId->setValue(deviceId.c_str());
+    // Usar std::string explícitamente para evitar corrupción
+    std::string deviceIdStr = deviceId.c_str();
+    pCharDeviceId->setValue(deviceIdStr);
+    Serial.print("[BLE] DeviceID characteristic set to: ");
+    Serial.println(deviceId);
     
     // Iniciar servicio
     pService->start();
@@ -331,12 +344,14 @@ void enterProvisioningMode() {
     NimBLEDevice::deinit(true);
     bleConnected = false;
     
-    // Inicializar módem y pasar a ONLINE
+    // Dar tiempo a la app para crear el documento en Firestore (20s para evitar race condition)
+    Serial.println("[BLE] Esperando 20s para que la app complete la vinculación en Firestore...");
+    delay(20000);
+    
+    // Inicializar módem y pasar a ONLINE SIN REINICIAR
     setupModem();
     deviceState = DeviceState::ONLINE;
-    // Reiniciar para arrancar online sin BLE activo
-    delay(300);
-    ESP.restart();
+    Serial.println("[BLE] Modo ONLINE activado");
 }
 
 // ===== LECTURA DE BOTONES =====
@@ -432,25 +447,41 @@ void updateStateMachine() {
         Serial.printf("[STATE] %d -> %d\n", prevIdx, curIdx);
     }
     
-    // Acciones según nuevo estado
-    switch (deviceState) {
-        case DeviceState::IDLE:
-            if (modem) modem->disableGNSS();
-            digitalWrite(PIN_LED_ESTADO, LOW);
-            break;
-        case DeviceState::ONLINE:
-            digitalWrite(PIN_LED_ESTADO, LOW);
-            break;
-        case DeviceState::SOS_GENERAL:
-        case DeviceState::SOS_MEDICA:
-        case DeviceState::SOS_SEGURIDAD:
-            digitalWrite(PIN_LED_ESTADO, HIGH);
-            break;
-        default:
-            break;
+    // Los LEDs se actualizan en updateLEDs(), no aquí
+    previousState = deviceState;
+}
+
+// ===== ACTUALIZACIÓN DE LEDS =====
+// Centraliza toda la lógica de LEDs para evitar conflictos
+void updateLEDs() {
+    // PIN_LED_ESTADO: Disponible en HARDWARE_A, B, C
+    
+    // Si es SOS, LED siempre ENCENDIDO (alerta crítica)
+    if (deviceState >= DeviceState::SOS_GENERAL && deviceState <= DeviceState::SOS_SEGURIDAD) {
+        digitalWrite(PIN_LED_ESTADO, HIGH);
+        return;
     }
     
-    previousState = deviceState;
+    // Si NO está aprovisionado: parpadeo solo durante la ventana inicial, luego OFF
+    if (!isProvisioned) {
+        if ((millis() - bootTimestamp) < UNPROV_BLINK_WINDOW_MS) {
+            bool blink = (millis() / 500) % 2;
+            digitalWrite(PIN_LED_ESTADO, blink);
+        } else {
+            digitalWrite(PIN_LED_ESTADO, LOW);
+        }
+        return;
+    }
+
+    // Si está aprovisionado pero aún no ONLINE visible (sin heartbeat 2xx), seguir parpadeando
+    if (deviceState != DeviceState::ONLINE || !lastHeartbeatOk) {
+        bool blink = (millis() / 500) % 2;
+        digitalWrite(PIN_LED_ESTADO, blink);
+        return;
+    }
+
+    // Modo ONLINE estable: LED APAGADO (silencioso)
+    digitalWrite(PIN_LED_ESTADO, LOW);
 }
 
 // ===== ACTUALIZACIÓN PERIÓDICA DE UBICACIÓN =====
@@ -520,11 +551,22 @@ void sendHeartbeat() {
     bool nvs_provisioned = preferences.getBool("provisioned", true);
     preferences.end();
     
-    // Si está siendo desprovisionado, hacer heartbeat cada 30 segundos para procesar cmd_reset rápido
-    unsigned long heartbeat_check_interval = !nvs_provisioned ? 30000UL : HEARTBEAT_INTERVAL;
-    // Primer heartbeat agresivo a los ~10s para detectar 404/410 rápido
+    // Intervalo base
+    unsigned long heartbeat_check_interval = HEARTBEAT_INTERVAL;
+
+    // Ventana inicial: mantener intervalos cortos para detectar unlink y 404/410 rápido
+    if (millis() < HEARTBEAT_EARLY_WINDOW_MS) {
+        heartbeat_check_interval = HEARTBEAT_FAST_INTERVAL;
+    }
+
+    // Si está marcado como desprovisionado en NVS, usar siempre intervalo rápido
+    if (!nvs_provisioned) {
+        heartbeat_check_interval = HEARTBEAT_FAST_INTERVAL;
+    }
+
+    // Primer heartbeat después de 45s para dar tiempo a que Firestore cree el documento
     if (!firstHeartbeatSent) {
-        heartbeat_check_interval = 10000UL;
+        heartbeat_check_interval = 45000UL;
     }
 
     if ((millis() - lastHeartbeat) < heartbeat_check_interval) {
@@ -532,6 +574,19 @@ void sendHeartbeat() {
     }
 
     bool sent = modem->sendHeartbeat(ownerUid, deviceId, lastLocation);
+
+#ifdef HARDWARE_A
+    lastHeartbeatOk = sent; // HTTPS modem no expone status, usamos éxito de envío
+#else
+    {
+        ModemProxy* m = (ModemProxy*)modem;
+        if (m) {
+            int st = m->getLastHttpStatus();
+            lastHeartbeatOk = (st >= 200 && st < 300);
+        }
+    }
+#endif
+
     if (sent) {
         lastHeartbeat = millis();
         Serial.println("[HEARTBEAT] Enviado");
@@ -588,6 +643,7 @@ void checkFactoryReset() {
 void setup() {
     Serial.begin(115200);
     delay(2000);
+    bootTimestamp = millis();
     
     Serial.println("\n╔═════════════════════════════════════════════╗");
     Serial.println("║       WILOBU FIRMWARE v2.0 (IoT)           ║");
@@ -725,8 +781,7 @@ void loop() {
     
     // Si no está aprovisionado, solo verificar botones
     if (!isProvisioned) {
-        // LED apagado en IDLE, parpadeo lento cada 3s para indicar "vivo"
-        digitalWrite(PIN_LED_ESTADO, ((millis() / 3000) % 2) == 0 && (millis() % 3000) < 100);
+        updateLEDs();
         delay(100);
         return;
     }
@@ -735,10 +790,7 @@ void loop() {
     updateLocation();
     sendHeartbeat();
     checkFactoryReset();
-    
-    // LED según estado
-    bool isSOS = (deviceState >= DeviceState::SOS_GENERAL && deviceState <= DeviceState::SOS_SEGURIDAD);
-    digitalWrite(PIN_LED_ESTADO, isSOS || ((millis() / 1000) % 2 && deviceState == DeviceState::ONLINE));
+    updateLEDs();
     
     delay(100);
 }

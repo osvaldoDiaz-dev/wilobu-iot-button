@@ -65,29 +65,43 @@ class BleService {
       }
       
       print('[BLE] ✓ Característica Owner encontrada');
-      String resolvedDeviceId = device.remoteId.str.replaceAll(':', '');
+      String resolvedDeviceId = device.remoteId.str.replaceAll(':', '').toUpperCase();
+      print('[BLE] MAC BLE (fallback): $resolvedDeviceId');
       
       if (deviceIdChar != null) {
         try {
+          print('[BLE] Leyendo característica DeviceID...');
           final raw = await deviceIdChar.read();
+          print('[BLE] Raw bytes recibidos: ${raw.length} bytes');
           if (raw.isNotEmpty) {
             // Convertir bytes a String, filtrando solo caracteres ASCII válidos (A-F, 0-9)
             String rawId = String.fromCharCodes(raw).trim();
+            print('[BLE] String decodificado: "$rawId" (${rawId.length} chars)');
             // Validar que solo contenga caracteres hexadecimales (0-9, A-F)
-            if (RegExp(r'^[0-9A-Fa-f]+$').hasMatch(rawId)) {
+            if (RegExp(r'^[0-9A-Fa-f]{12}$').hasMatch(rawId)) {
               resolvedDeviceId = rawId.toUpperCase();
               print('[BLE] ✓ DeviceID leído: $resolvedDeviceId');
             } else {
-              print('[BLE] ⚠️ DeviceID inválido (contiene caracteres no-hex): $rawId');
-              // Usar MAC address como fallback
-              resolvedDeviceId = device.remoteId.str.replaceAll(':', '').toUpperCase();
+              print('[BLE] ⚠️ DeviceID inválido (contiene caracteres no-hex o longitud incorrecta): $rawId');
+              print('[BLE] Usando MAC BLE como fallback: $resolvedDeviceId');
             }
+          } else {
+            print('[BLE] ⚠️ DeviceID vacío, usando MAC BLE: $resolvedDeviceId');
           }
         } catch (e) {
           print('[BLE] ⚠️ No se pudo leer DeviceID: $e');
+          print('[BLE] Usando MAC BLE como fallback: $resolvedDeviceId');
         }
+      } else {
+        print('[BLE] Característica DeviceID no encontrada, usando MAC BLE: $resolvedDeviceId');
       }
       
+      // Validar deviceId final (12 hex). Si no es válido, abortar para evitar crear docs corruptos/duplicados
+      if (!RegExp(r'^[0-9A-F]{12}$').hasMatch(resolvedDeviceId)) {
+        await device.disconnect();
+        throw Exception('ID de dispositivo inválido ($resolvedDeviceId). Reintenta el escaneo/vinculación.');
+      }
+
       // Escribir ownerUid
       print('[BLE] Escribiendo UID: $ownerUid');
       await ownerChar.write(ownerUid.codeUnits, withoutResponse: false);

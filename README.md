@@ -1,161 +1,163 @@
-# 🔘 Wilobu - IoT Emergency Button System
+# 🔘 Wilobu - Sistema IoT de Emergencia
 
-**Wilobu** es un sistema de botón IoT de emergencia con monitoreo en tiempo real, integración con contactos de emergencia, y provisioning por Bluetooth.
+Sistema completo de botón de emergencia IoT con monitoreo en tiempo real, notificaciones push y vinculación por Bluetooth.
 
-## 📱 Stack Tecnológico
+## 🚀 Inicio Rápido para Evaluación
 
-### App Móvil (Flutter)
-- **Framework**: Flutter 3.10+
-- **State Management**: Riverpod 2.5.1
-- **Navigation**: GoRouter 14.x
-- **Backend**: Firebase Auth, Cloud Firestore, Cloud Functions
-- **Hardware**: BLE provisioning, location tracking
-- **Maps**: FlutterMap + OpenStreetMap
+### 1. **Probar la App Móvil** (Recomendado)
 
-### Hardware (ESP32)
-- **Microcontroller**: ESP32 con módulo A7670SA (variantes A/B/C)
-- **Protocolos**: BLE (provisioning), HTTP/HTTPS (reporting)
-- **Almacenamiento**: NVRAM (configuración persistente)
-- **Características**: Botón físico para SOS, monitoreo de batería, heartbeat cada 5 min
+#### Requisitos
+- Android device/emulator (minSdk 24) o iOS device/simulator (minTarget 11.0)
+- Flutter 3.10+
+- Cuenta Firebase configurada (incluida en el proyecto)
 
-### Backend (Firebase)
-- **Autenticación**: Firebase Auth
-- **Base de datos**: Cloud Firestore con reglas de seguridad
-- **Serverless**: Cloud Functions (Node.js)
-- **Proxy**: Cloudflare Worker para HTTPS
-
----
-
-## 🚀 Quick Start
-
-### Requisitos
-- Flutter 3.10+, Dart 3.0+
-- Node.js 16+
-- Firebase CLI
-- PlatformIO (para firmware)
-
-### Setup Inicial
-
-**App Móvil:**
+#### Ejecutar
 ```bash
 cd wilobu_app
 flutter pub get
 flutter run
 ```
 
-**Firebase:**
+**Credenciales de prueba:**
+- Email: `test@wilobu.com`
+- Password: `Test1234!`
+
+### 2. **Funcionalidades Principales**
+
+#### 📱 App Móvil
+1. **Registro/Login**: Firebase Authentication
+2. **Vincular Dispositivo**: 
+   - Presionar botón SOS en hardware 5 segundos
+   - Escanear dispositivo BLE "Wilobu-XXXXXX"
+   - Vinculación automática
+3. **Enviar Alerta SOS**: Presionar botón SOS 3 segundos
+4. **Ver Ubicación**: Mapa en tiempo real con OpenStreetMap
+5. **Gestionar Contactos**: Agregar contactos de emergencia
+
+#### 🔧 Hardware (Opcional)
+```bash
+cd wilobu_firmware
+python -m platformio run --target upload
+```
+**Hardware**: ESP32 + A7670SA modem
+**Pines**: Definidos en `src/main.cpp`
+
+### 3. **Backend (Pre-configurado)**
+
+#### Firebase
+- **Proyecto**: `wilobu-d21b2`
+- **Firestore**: Reglas en `firestore.rules`
+- **Functions**: Node.js functions en `functions/`
+
+Para re-deployar:
 ```bash
 firebase login
 firebase deploy --only firestore:rules,functions
 ```
 
-**Firmware:**
+#### Cloudflare Worker (Proxy HTTPS)
 ```bash
-cd wilobu_firmware
-platformio run --target upload
+cd cloudflare-worker
+wrangler deploy
 ```
 
-## 📋 Características Principales
-
-### 👤 Gestión de Perfil
-- Editar nombre, email, teléfono
-- Contacto de emergencia
-- Preferencias de notificación
-- Sincronización en tiempo real
-
-### 🔌 Gestión de Dispositivos
-- Vincular/desvincular por BLE
-- Apodo personalizado
-- Monitoreo de batería
-- Ubicación en tiempo real
-
-### 👥 Contactos de Emergencia
-- Agregar contactos
-- Compartir acceso como "viewer"
-- Recibir alertas SOS
-- Ver ubicación en mapa
-
-### 🆘 Sistema SOS
-- 3 tipos de alertas: General, Médica, Seguridad
-- Notificaciones en tiempo real
-- Ubicación automática
-
-## 🔄 Flujos Principales
-
-### Provisioning
-1. Usuario vincula dispositivo por BLE
-2. Ingresa PIN (1234)
-3. App envía credenciales Firebase
-4. Dispositivo se sincroniza
-
-### SOS Activation
-1. Usuario presiona botón 3 seg
-2. Dispositivo envía alerta a Firebase
-3. Cloud Function notifica contactos
-4. Contactos ven ubicación en mapa
-
-## 📚 Documentación
-
-- **App Mobile**: `wilobu_app/lib/` - Comentarios en código
-- **Firestore Rules**: `firestore.rules`
-- **Cloud Functions**: `functions/index.js`
-- **Firmware**: `wilobu_firmware/src/` - Comentarios en código
-- **Cloudflare Worker**: `cloudflare-worker/worker.js`
-
-## 🛠️ Desarrollo
-
-### Estructura Proyecto
+## 📋 Arquitectura
 
 ```
-wilobu_app/
-├── lib/features/        # Features por módulo
-├── lib/theme/           # Temas
-└── lib/router.dart      # Rutas
-
-wilobu_firmware/
-├── src/                 # Código fuente C++
-└── platformio.ini       # Configuración
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│   App       │◄──BLE──►│  Hardware    │◄──LTE──►│  Firebase   │
+│  (Flutter)  │         │  (ESP32)     │         │  + Worker   │
+└─────────────┘         └──────────────┘         └─────────────┘
+      ▲                                                  │
+      │                Push Notifications                │
+      └─────────────────────────────────────────────────┘
 ```
 
-### Crear Feature Nueva
+### Stack Tecnológico
+- **Frontend**: Flutter + Riverpod + GoRouter
+- **Backend**: Firebase (Auth, Firestore, Functions)
+- **Hardware**: ESP32 + NimBLE + A7670SA modem
+- **Infraestructura**: Cloudflare Worker (proxy HTTPS)
+
+## 🔄 Flujos de Uso
+
+### Vinculación de Dispositivo
+1. Usuario crea cuenta en app
+2. Presiona botón SOS en hardware por 5 segundos
+3. App escanea BLE y encuentra "Wilobu-XXXXXX"
+4. Vinculación automática (ownerUid enviado por BLE)
+5. Dispositivo aparece en app con status online
+
+### Alerta SOS
+1. Usuario presiona botón SOS en hardware 3 segundos
+2. Dispositivo envía GPS + tipo de alerta a Firebase
+3. Cloud Function notifica contactos de emergencia vía FCM
+4. Contactos reciben push con ubicación y mapa
+
+## 🗂️ Estructura del Proyecto
+
 ```
-lib/features/{nombre}/
-├── domain/              # Models
-├── infrastructure/      # Services
-└── presentation/        # UI
+wilobu/
+├── wilobu_app/              # App Flutter
+│   ├── lib/features/        # Features (auth, devices, alerts, profile)
+│   ├── lib/ble/             # Servicio BLE
+│   └── lib/theme/           # Tema UI
+├── wilobu_firmware/         # Firmware ESP32
+│   └── src/                 # main.cpp, ModemProxy, ModemHTTPS
+├── functions/               # Cloud Functions
+│   └── index.js             # heartbeat, SOS handler
+├── cloudflare-worker/       # Worker proxy
+│   └── worker.js            
+├── firestore.rules          # Reglas de seguridad
+└── README.md
 ```
 
-### Build
-```bash
-# Android APK
-flutter build apk --release
+## 🧪 Testing
 
-# iOS
-flutter build ios --release
-```
+### Casos de Prueba Sugeridos
+
+1. ✅ Registro de usuario nuevo
+2. ✅ Vinculación de dispositivo por BLE
+3. ✅ Envío de alerta SOS (General/Médica/Seguridad)
+4. ✅ Visualización de ubicación en mapa
+5. ✅ Agregar contacto de emergencia
+6. ✅ Recepción de notificaciones push
+7. ✅ Desvincular dispositivo
+
+### Usuario de Prueba
+Ya existe en Firebase con dispositivo vinculado:
+- **Email**: `test@wilobu.com`
+- **Password**: `Test1234!`
+- **Dispositivo**: `781C3CB994FC`
+
+## 🔑 Configuración (Solo si necesitas cambiar)
+
+### Firebase
+- Proyecto ID: `wilobu-d21b2`
+- Credenciales: `wilobu_app/android/app/google-services.json`
+
+### Cloudflare Worker
+- Account ID y API Token en `cloudflare-worker/wrangler.toml`
+- Secrets: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`
 
 ## 🐛 Troubleshooting
 
 | Problema | Solución |
 |----------|----------|
-| BLE no conecta | Permisos Bluetooth + reiniciar |
-| Ubicación no actualiza | Permisos de localización |
-| Alertas no llegan | Notificaciones habilitadas |
-| Worker 401 | Verificar secrets en Cloudflare |
+| App no compila | `flutter clean && flutter pub get` |
+| BLE no conecta | Verificar permisos Bluetooth y Location |
+| Alertas no llegan | Verificar permisos de notificaciones |
+| Firmware no flashea | Cerrar monitor serial (Ctrl+C) |
+| 410 en heartbeat | Verificar que documento existe en Firestore |
 
-## 📱 Platforms
-
-- ✅ Android (minSdk 24)
-- ✅ iOS (minTarget 11.0)
-- ⏳ Web (experimental)
-
-## 📄 License
+## 📄 Licencia
 
 Propietario - Todos los derechos reservados
 
 ---
 
+**Versión**: 2.0  
 **Última actualización**: 8 de Diciembre, 2025  
-**Versión**: 2.0.1  
 **Estado**: ✅ Producción
+
 

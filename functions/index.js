@@ -54,10 +54,11 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
 
         const deviceDoc = await deviceRef.get();
 
-        // Bloquear re-provisión silenciosa: si no existe, solicitar reset
+        // Si no existe el documento, devolver 410 - NO crear automáticamente
+        // Solo la app debe crear documentos post-vinculación para evitar duplicados
         if (!deviceDoc.exists) {
-            console.warn(`[HEARTBEAT] ${deviceId} no existe -> devolver 404 y cmd_reset`);
-            return res.status(404).json({ success: false, cmd_reset: true, error: 'device_not_found' });
+            console.warn(`[HEARTBEAT] ${deviceId} no existe -> 410 device_not_found`);
+            return res.status(410).json({ success: false, cmd_reset: true, error: 'device_not_found' });
         }
 
         const current = deviceDoc.data() || {};
@@ -68,9 +69,15 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
             return res.status(401).json({ success: false, cmd_reset: true, error: 'owner_mismatch' });
         }
 
-        // Si está marcado como desprovisionado, forzar reset
-        if (current.provisioned === false) {
-            console.warn(`[HEARTBEAT] ${deviceId} marcado desprovisionado -> 410`);
+        // Si está marcado como desprovisionado o con cmd_reset, forzar reset
+        if (current.provisioned === false || current.cmd_reset === true) {
+            console.warn(`[HEARTBEAT] ${deviceId} marcado para reset (provisioned=${current.provisioned}, cmd_reset=${current.cmd_reset}) -> 410`);
+            try {
+                await deviceRef.delete();
+                console.log(`[HEARTBEAT] ${deviceId} borrado tras cmd_reset/provisioned=false`);
+            } catch (delErr) {
+                console.warn(`[HEARTBEAT] No se pudo borrar ${deviceId}:`, delErr);
+            }
             return res.status(410).json({ success: false, cmd_reset: true, error: 'device_deprovisioned' });
         }
 
@@ -91,8 +98,17 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
         }
         
         // Actualizar documento existente
-        await deviceRef.update(update);
-        console.log(`[HEARTBEAT] ✓ ${deviceId} updated`);
+        try {
+            await deviceRef.update(update);
+            console.log(`[HEARTBEAT] ✓ ${deviceId} updated`);
+        } catch (updateErr) {
+            // Si el doc fue borrado entre el .get() y el .update(), devolver 410
+            if (updateErr.code === 'NOT_FOUND' || updateErr.code === 5) {
+                console.warn(`[HEARTBEAT] ${deviceId} borrado durante update -> 410`);
+                return res.status(410).json({ success: false, cmd_reset: true, error: 'device_deleted' });
+            }
+            throw updateErr; // Re-lanzar otros errores
+        }
         
         // Responder con cmd_reset si está activo
         return res.status(200).json({ success: true, cmd_reset: cmdReset });
@@ -726,6 +742,62 @@ exports.cleanupUnprovisionedDevices = functions.pubsub
         }
     });
 
+// ===== NOTIFICACIONES DE VINCULACIÓN / DESVINCULACIÓN =====
+async function sendOwnerNotification(userId, title, body) {
+    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+    if (!userDoc.exists) return;
+    const tokens = userDoc.data().fcmTokens || [];
+    if (!tokens.length) return;
+
+    const message = {
+        notification: { title, body },
+        tokens,
+        data: { type: 'device_event' }
+    };
+
+    const resp = await admin.messaging().sendMulticast(message);
+    const invalid = [];
+    resp.responses.forEach((r, idx) => {
+        if (!r.success && r.error && (
+            r.error.code === 'messaging/invalid-registration-token' ||
+            r.error.code === 'messaging/registration-token-not-registered'
+        )) {
+            invalid.push(tokens[idx]);
+        }
+    });
+    if (invalid.length) {
+        await userDoc.ref.update({
+            fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalid)
+        });
+    }
+}
+
+exports.onDeviceLinked = functions.firestore
+    .document('users/{userId}/devices/{deviceId}')
+    .onCreate(async (snap, context) => {
+        const { userId, deviceId } = context.params;
+        const name = snap.data().name || deviceId;
+        await sendOwnerNotification(
+            userId,
+            'Wilobu vinculado',
+            `Tu dispositivo ${name} se vinculó correctamente.`
+        );
+        return null;
+    });
+
+exports.onDeviceUnlinked = functions.firestore
+    .document('users/{userId}/devices/{deviceId}')
+    .onDelete(async (snap, context) => {
+        const { userId, deviceId } = context.params;
+        const name = snap.data()?.name || deviceId;
+        await sendOwnerNotification(
+            userId,
+            'Wilobu desvinculado',
+            `El dispositivo ${name} fue desvinculado.`
+        );
+        return null;
+    });
+
 // ===== CLOUD FUNCTION: CHECK DEVICE STATUS (HTTP) =====
 /**
  * Verifica si un dispositivo existe en Firestore y devuelve su ownerUid
@@ -775,20 +847,25 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
         }
         
         console.log('[CHECK_DEVICE] Buscando dispositivo:', deviceId);
+        console.log('[CHECK_DEVICE] Query mode: docId then field deviceId');
         
-        // Buscar el dispositivo en todos los usuarios (collectionGroup query)
-        // NO podemos filtrar por documentId en collectionGroup, hay que escanear
-        const devicesSnapshot = await admin.firestore()
+        // Buscar el dispositivo; preferimos docId para evitar fallar si falta el campo deviceId
+        const byIdSnapshot = await admin.firestore()
             .collectionGroup('devices')
+            .where(admin.firestore.FieldPath.documentId(), '==', deviceId)
+            .limit(1)
             .get();
-        
-        // Buscar manualmente el deviceId en los resultados
-        let deviceDoc = null;
-        for (const doc of devicesSnapshot.docs) {
-            if (doc.id === deviceId) {
-                deviceDoc = doc;
-                break;
-            }
+
+        let deviceDoc = byIdSnapshot.docs[0];
+
+        // Fallback: buscar por campo deviceId si no lo encontramos por docId
+        if (!deviceDoc) {
+            const devicesSnapshot = await admin.firestore()
+                .collectionGroup('devices')
+                .where('deviceId', '==', deviceId)
+                .limit(1)
+                .get();
+            deviceDoc = devicesSnapshot.docs.find(doc => doc.id === deviceId) || devicesSnapshot.docs[0];
         }
         
         if (!deviceDoc) {
@@ -822,9 +899,10 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
         
     } catch (error) {
         console.error('[CHECK_DEVICE] Error:', error);
-        return res.status(500).json({ 
-            error: 'Internal server error',
-            message: error.message 
+        // Devolver 404 en lugar de 500 para evitar loops en firmware cuando simplemente no existe
+        return res.status(404).json({ 
+            error: 'Device lookup failed',
+            message: error.message || 'Not found'
         });
     }
 });

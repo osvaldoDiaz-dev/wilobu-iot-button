@@ -392,7 +392,13 @@ bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, c
     Serial.print("[HEARTBEAT] Status HTTP recibido: ");
     Serial.println(status);
     
-    if (status == 404 || status == 410 || status == 401) {
+    if (status == 404) {
+        Serial.println("[HEARTBEAT] ⚠️ 404 device not found en backend -> Factory Reset");
+        factoryResetPending = true;
+        return false;
+    }
+
+    if (status == 410 || status == 401) {
         Serial.print("[HEARTBEAT] ⚠️ Código de desaprovisionamiento detectado: ");
         Serial.println(status);
         Serial.println("[HEARTBEAT] Iniciando Factory Reset...");

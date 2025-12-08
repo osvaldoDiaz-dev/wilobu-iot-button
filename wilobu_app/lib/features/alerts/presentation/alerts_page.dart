@@ -345,6 +345,55 @@ class _AlertCard extends ConsumerWidget {
     }
   }
 
+  Future<void> _showExpandedMap(BuildContext context, double lat, double lng, Color pinColor) async {
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 320,
+                width: double.infinity,
+                child: FlutterMap(
+                  options: MapOptions(initialCenter: LatLng(lat, lng), initialZoom: 15),
+                  children: [
+                    TileLayer(
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.wilobu_app',
+                    ),
+                    MarkerLayer(markers: [
+                      Marker(
+                        point: LatLng(lat, lng),
+                        child: Icon(Icons.location_pin, color: pinColor, size: 42),
+                      ),
+                    ]),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.map_outlined, size: 18),
+                      label: const Text('Abrir en Google Maps'),
+                      onPressed: () => _openInMaps(lat, lng),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(ctx).pop()),
+                ]),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _getDirections(double lat, double lng) async {
     final uri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng');
     if (await canLaunchUrl(uri)) {
@@ -518,36 +567,58 @@ class _AlertCard extends ConsumerWidget {
                         // Mapa
                         ClipRRect(
                           borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
-                          child: SizedBox(
-                            height: 150,
-                            width: double.infinity,
-                            child: FlutterMap(
-                              options: MapOptions(
-                                initialCenter: LatLng(alert.lat!, alert.lng!),
-                                initialZoom: 15.0,
-                                interactionOptions: const InteractionOptions(
-                                  flags: InteractiveFlag.none, // Solo visual, no interactivo
-                                ),
-                              ),
+                          child: GestureDetector(
+                            onTap: () => _showExpandedMap(context, alert.lat!, alert.lng!, alert.typeColor),
+                            child: Stack(
                               children: [
-                                TileLayer(
-                                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                  userAgentPackageName: 'com.example.wilobu_app',
-                                ),
-                                MarkerLayer(
-                                  markers: [
-                                    Marker(
-                                      point: LatLng(alert.lat!, alert.lng!),
-                                      width: 40,
-                                      height: 40,
-                                      child: Icon(
-                                        Icons.location_on,
-                                        color: alert.typeColor,
-                                        size: 40,
+                                SizedBox(
+                                  height: 150,
+                                  width: double.infinity,
+                                  child: AbsorbPointer(
+                                    child: FlutterMap(
+                                      options: MapOptions(
+                                        initialCenter: LatLng(alert.lat!, alert.lng!),
+                                        initialZoom: 15.0,
+                                        interactionOptions: const InteractionOptions(
+                                          flags: InteractiveFlag.none, // Solo visual, no interactivo
+                                        ),
                                       ),
+                                      children: [
+                                        TileLayer(
+                                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                          userAgentPackageName: 'com.example.wilobu_app',
+                                        ),
+                                        MarkerLayer(
+                                          markers: [
+                                            Marker(
+                                              point: LatLng(alert.lat!, alert.lng!),
+                                              width: 40,
+                                              height: 40,
+                                              child: Icon(
+                                                Icons.location_on,
+                                                color: alert.typeColor,
+                                                size: 40,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
                                     ),
-                                  ],
+                                  ),
                                 ),
+                                Positioned(right: 8, bottom: 8, child: Row(children: [
+                                  FloatingActionButton.small(
+                                    heroTag: 'alert_full_${alert.id}',
+                                    onPressed: () => _showExpandedMap(context, alert.lat!, alert.lng!, alert.typeColor),
+                                    child: const Icon(Icons.zoom_out_map, size: 18),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  FloatingActionButton.small(
+                                    heroTag: 'alert_gmaps_${alert.id}',
+                                    onPressed: () => _openInMaps(alert.lat!, alert.lng!),
+                                    child: const Icon(Icons.open_in_new, size: 18),
+                                  ),
+                                ])),
                               ],
                             ),
                           ),
