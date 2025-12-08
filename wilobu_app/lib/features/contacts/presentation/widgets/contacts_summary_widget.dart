@@ -93,7 +93,7 @@ class ContactModel {
   
   String get avatarLabel {
     final display = displayName?.trim();
-    if (display != null && display.isNotEmpty) {
+    if (display != null && display.isNotEmpty && display.length > 0) {
       return display[0].toUpperCase();
     }
     return 'U';

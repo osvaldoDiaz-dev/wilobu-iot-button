@@ -295,6 +295,7 @@ class _MyContactsTab extends ConsumerWidget {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: byDevice.entries.map((entry) {
+            if (entry.value.isEmpty) return const SizedBox.shrink();
             final deviceName = entry.value.first['deviceName'];
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -417,11 +418,11 @@ class _EmergencyContactCardState extends ConsumerState<_EmergencyContactCard> {
         leading: CircleAvatar(
           backgroundColor: theme.colorScheme.primaryContainer,
           child: Text(
-            (widget.contact['name'] as String).substring(0, 1).toUpperCase(),
+            (widget.contact['name'] as String? ?? '').isEmpty ? 'U' : (widget.contact['name'] as String).substring(0, 1).toUpperCase(),
             style: TextStyle(color: theme.colorScheme.onPrimaryContainer, fontWeight: FontWeight.bold),
           ),
         ),
-        title: Text(widget.contact['name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+        title: Text(widget.contact['name'] ?? 'Sin nombre', style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(widget.contact['email'] ?? '', style: TextStyle(color: theme.colorScheme.onSurfaceVariant)),
         trailing: _removing
             ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
@@ -1023,7 +1024,7 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
                     itemBuilder: (BuildContext context, int index) {
                       final option = options.elementAt(index);
                       final displayName = (option['displayName'] as String? ?? '').trim();
-                      final firstChar = displayName.isNotEmpty ? displayName.substring(0, 1).toUpperCase() : 'U';
+                      final firstChar = (displayName.isNotEmpty && displayName.length > 0) ? displayName.substring(0, 1).toUpperCase() : 'U';
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: theme.colorScheme.primaryContainer,

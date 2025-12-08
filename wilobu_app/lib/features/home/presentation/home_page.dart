@@ -107,12 +107,21 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
               final lastSeen = (data['lastSeen'] as Timestamp?)?.toDate() ??
                   (loc is Map<String, dynamic> ? (loc['timestamp'] as Timestamp?)?.toDate() : null);
 
+              // Calcular status real basado en lastSeen
+              String status = 'offline';
+              if (lastSeen != null) {
+                final diff = DateTime.now().difference(lastSeen);
+                if (diff.inMinutes < 20) {
+                  status = 'online';
+                }
+              }
+
               devices.add(ViewerDevice(
                 ownerUid: data['ownerUid'] ?? ownerUid,
                 ownerName: data['ownerName'] ?? data['ownerEmail'] ?? 'Dueño',
                 deviceId: doc.id,
                 nickname: data['nickname'] as String?,
-                status: data['status'] ?? 'offline',
+                status: status,
                 battery: (data['battery'] as num?)?.toInt(),
                 lastSeen: lastSeen,
               ));
@@ -161,12 +170,21 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
                   final lastSeen = (data['lastSeen'] as Timestamp?)?.toDate() ??
                       (loc is Map<String, dynamic> ? (loc['timestamp'] as Timestamp?)?.toDate() : null);
 
+                  // Calcular status real basado en lastSeen
+                  String status = 'offline';
+                  if (lastSeen != null) {
+                    final diff = DateTime.now().difference(lastSeen);
+                    if (diff.inMinutes < 20) {
+                      status = 'online';
+                    }
+                  }
+
                   updatedDevices.add(ViewerDevice(
                     ownerUid: data['ownerUid'] ?? ownerUid,
                     ownerName: data['ownerName'] ?? data['ownerEmail'] ?? 'Dueño',
                     deviceId: doc.id,
                     nickname: data['nickname'] as String?,
-                    status: data['status'] ?? 'offline',
+                    status: status,
                     battery: (data['battery'] as num?)?.toInt(),
                     lastSeen: lastSeen,
                   ));
@@ -409,15 +427,30 @@ class WilobuDevice {
     
     final lastSeenTs = d['lastSeen'] as Timestamp?;
     final locTs = (loc is Map<String, dynamic>) ? loc['timestamp'] as Timestamp? : null;
+    final lastSeen = lastSeenTs?.toDate() ?? locTs?.toDate();
+    
+    // Calcular status real basado en lastSeen
+    String status = 'offline';
+    if (lastSeen != null) {
+      final diff = DateTime.now().difference(lastSeen);
+      if (diff < offlineThreshold) {
+        status = 'online';
+      }
+    }
+    // Si hay estado SOS, mantenerlo
+    final dbStatus = d['status'] as String?;
+    if (dbStatus != null && dbStatus.startsWith('sos_')) {
+      status = dbStatus;
+    }
     
     return WilobuDevice(
       id: doc.id,
-      status: d['status'] ?? 'offline',
+      status: status,
       nickname: d['nickname'] as String?,
       lat: lat,
       lng: lng,
       battery: (d['battery'] as num?)?.toInt(),
-      lastSeen: lastSeenTs?.toDate() ?? locTs?.toDate(),
+      lastSeen: lastSeen,
     );
   }
 
