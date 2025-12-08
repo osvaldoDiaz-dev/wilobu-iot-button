@@ -746,7 +746,28 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
     }
     
     try {
-        const { deviceId } = req.body;
+        // Log para debugging
+        console.log('[CHECK_DEVICE] Headers:', req.headers);
+        console.log('[CHECK_DEVICE] Body type:', typeof req.body);
+        console.log('[CHECK_DEVICE] Raw body:', req.body);
+        
+        // Intentar parsear de varias formas
+        let deviceId = req.body?.deviceId;
+        
+        // Si req.body es string (rawBody), intentar parsearlo
+        if (typeof req.body === 'string') {
+            try {
+                const parsed = JSON.parse(req.body);
+                deviceId = parsed.deviceId;
+            } catch (e) {
+                console.log('[CHECK_DEVICE] Failed to parse body as JSON');
+            }
+        }
+        
+        // Si aún no tenemos deviceId, buscar en query params como fallback
+        if (!deviceId && req.query.deviceId) {
+            deviceId = req.query.deviceId;
+        }
         
         // Validar campo requerido
         if (!deviceId) {
