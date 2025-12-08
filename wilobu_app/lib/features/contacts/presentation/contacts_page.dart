@@ -995,18 +995,20 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
                     itemCount: options.length,
                     itemBuilder: (BuildContext context, int index) {
                       final option = options.elementAt(index);
+                      final displayName = (option['displayName'] as String? ?? '').trim();
+                      final firstChar = displayName.isNotEmpty ? displayName.substring(0, 1).toUpperCase() : 'U';
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: theme.colorScheme.primaryContainer,
                           child: Text(
-                            (option['displayName'] as String? ?? 'U').substring(0, 1).toUpperCase(),
+                            firstChar,
                             style: TextStyle(
                               color: theme.colorScheme.onPrimaryContainer,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
-                        title: Text(option['displayName'] ?? 'Usuario'),
+                        title: Text(displayName.isNotEmpty ? displayName : 'Usuario'),
                         subtitle: Text(option['email'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
                         onTap: () => onSelected(option),
                       );
