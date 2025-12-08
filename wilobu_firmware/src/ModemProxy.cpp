@@ -215,8 +215,32 @@ retry_http:
     }
 
     Serial.print("[HTTP] Payload size: "); Serial.println(json.length());
-    modemSerial->println(json);
-    delay(1000);
+    Serial.print("[HTTP] Sending JSON: "); Serial.println(json);
+    modemSerial->print(json);  // Usar print() sin newline
+    
+    // Esperar confirmación del módem después de recibir datos
+    String uploadResp = "";
+    unsigned long uploadStart = millis();
+    while (millis() - uploadStart < 12000) {  // 12 segundos para upload
+        while (modemSerial->available()) {
+            char c = (char)modemSerial->read();
+            uploadResp += c;
+            Serial.print(c);  // Echo para debug
+        }
+        if (uploadResp.indexOf("OK") != -1) {
+            break;
+        }
+        delay(10);
+    }
+    Serial.println();
+    Serial.print("[HTTP] Upload response: "); Serial.println(uploadResp);
+    
+    if (uploadResp.indexOf("OK") == -1) {
+        Serial.println("[HTTP] Error: No OK después de enviar payload");
+        sendATCommand("AT+HTTPTERM", 1000);
+        lastHttpStatus = -1;
+        return "";
+    }
 
     // HTTPACTION devuelve OK inmediatamente, pero +HTTPACTION llega después
     sendATCommand("AT+HTTPACTION=1", 2000);

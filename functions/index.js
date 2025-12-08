@@ -777,13 +777,21 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
         console.log('[CHECK_DEVICE] Buscando dispositivo:', deviceId);
         
         // Buscar el dispositivo en todos los usuarios (collectionGroup query)
+        // NO podemos filtrar por documentId en collectionGroup, hay que escanear
         const devicesSnapshot = await admin.firestore()
             .collectionGroup('devices')
-            .where(admin.firestore.FieldPath.documentId(), '==', deviceId)
-            .limit(1)
             .get();
         
-        if (devicesSnapshot.empty) {
+        // Buscar manualmente el deviceId en los resultados
+        let deviceDoc = null;
+        for (const doc of devicesSnapshot.docs) {
+            if (doc.id === deviceId) {
+                deviceDoc = doc;
+                break;
+            }
+        }
+        
+        if (!deviceDoc) {
             console.log('[CHECK_DEVICE] Dispositivo no encontrado:', deviceId);
             return res.status(404).json({ 
                 error: 'Device not found',
@@ -791,7 +799,6 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
             });
         }
         
-        const deviceDoc = devicesSnapshot.docs[0];
         const deviceData = deviceDoc.data();
         const ownerUid = deviceData.ownerUid;
         

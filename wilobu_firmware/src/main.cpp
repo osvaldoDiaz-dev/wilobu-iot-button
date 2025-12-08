@@ -184,6 +184,9 @@ void setupBLE() {
     Serial.println("═════════════════════════════════════");
 }
 
+// ===== DECLARACIONES FORWARD =====
+void attemptAutoRecovery();
+
 // ===== INICIALIZACIÓN DEL MÓDEM =====
 // Inicializa el módem y prueba varios baudrates
 void setupModem() {
@@ -638,16 +641,18 @@ void setup() {
     Serial.print("[DEVICE] ID: ");
     Serial.println(deviceId);
     
-    // Si ya está aprovisionado, ir directo a inicializar módem
+    // Intentar inicializar módem siempre (para auto-recovery)
+    setupModem();
+    
+    // Si ya está aprovisionado, ir directo a ONLINE
     if (isProvisioned) {
-        setupModem();
         deviceState = DeviceState::ONLINE;
         Serial.println("\n[SETUP] Sistema inicializado - Modo ONLINE");
     } else {
-        // Dispositivo sin vincular - IDLE esperando activación manual
+        // Dispositivo sin vincular pero módem conectado - intentar auto-recovery
         deviceState = DeviceState::IDLE;
         digitalWrite(PIN_LED_ESTADO, LOW);
-        Serial.println("\n[SETUP] Sistema en IDLE - Esperando vinculación manual");
+        Serial.println("\n[SETUP] Sistema en IDLE - Esperando vinculación (auto-recovery habilitado)");
     }
 }
 
