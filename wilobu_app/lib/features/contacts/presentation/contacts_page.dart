@@ -736,35 +736,28 @@ class _AddContactTab extends ConsumerStatefulWidget {
 }
 
 class _AddContactTabState extends ConsumerState<_AddContactTab> {
-  final _emailController = TextEditingController();
+  final _usernameController = TextEditingController();
   String? _selectedDeviceId;
   bool _searching = false;
   bool _adding = false;
   
-  Map<String, dynamic>? _foundUser;
+  Map<String, dynamic>? _selectedUser;
   List<Map<String, dynamic>> _userDevices = [];
+  List<Map<String, dynamic>> _searchResults = [];
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _usernameController.dispose();
     super.dispose();
   }
 
-  Future<void> _searchUser() async {
-    final email = _emailController.text.trim();
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ingresa un email')),
-      );
+  Future<void> _searchUsers(String query) async {
+    if (query.isEmpty) {
+      setState(() => _searchResults = []);
       return;
     }
 
-    setState(() {
-      _searching = true;
-      _foundUser = null;
-      _userDevices = [];
-      _selectedDeviceId = null;
-    });
+    setState(() => _searching = true);
 
     try {
       final firestore = ref.read(firestoreProvider);
@@ -772,26 +765,50 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
       final currentUser = auth.currentUser;
       if (currentUser == null) throw Exception('No autenticado');
 
-      // Buscar usuario por email
-      final usersQuery = await firestore.collection('users').where('email', isEqualTo: email).limit(1).get();
+      // Búsqueda por displayName con startAt y endAt para búsqueda parcial
+      final lowerQuery = query.toLowerCase();
+      final usersQuery = await firestore
+          .collection('users')
+          .orderBy('displayName')
+          .startAt([lowerQuery])
+          .endAt([lowerQuery + '\uf8ff'])
+          .limit(10)
+          .get();
       
-      if (usersQuery.docs.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Usuario no encontrado')),
-          );
+      final results = <Map<String, dynamic>>[];
+      for (var doc in usersQuery.docs) {
+        // No mostrar al usuario actual en los resultados
+        if (doc.id != currentUser.uid) {
+          results.add({'uid': doc.id, ...doc.data()});
         }
-        return;
       }
 
-      final userDoc = usersQuery.docs.first;
-      final userData = userDoc.data();
+      setState(() => _searchResults = results);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error en búsqueda: $e'), backgroundColor: Colors.red),
+        );
+      }
+      setState(() => _searchResults = []);
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  Future<void> _selectUser(Map<String, dynamic> user) async {
+    setState(() => _selectedUser = user);
+
+    try {
+      final firestore = ref.read(firestoreProvider);
+      final auth = ref.read(firebaseAuthProvider);
+      final currentUser = auth.currentUser;
+      if (currentUser == null) throw Exception('No autenticado');
 
       // Obtener dispositivos del usuario actual
       final devicesQuery = await firestore.collection('users/${currentUser.uid}/devices').get();
       
       setState(() {
-        _foundUser = {'uid': userDoc.id, ...userData};
         _userDevices = devicesQuery.docs.map((d) => {'id': d.id, ...d.data()}).toList();
         if (_userDevices.isNotEmpty) {
           _selectedDeviceId = _userDevices.first['id'];
@@ -803,33 +820,35 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
-    } finally {
-      if (mounted) setState(() => _searching = false);
     }
   }
 
   Future<void> _sendRequest() async {
-    if (_foundUser == null || _selectedDeviceId == null) return;
+    if (_selectedUser == null || _selectedDeviceId == null) return;
 
     setState(() => _adding = true);
 
     try {
       await ref.read(addContactProvider({
-        'contactUid': _foundUser!['uid'],
-        'contactName': _foundUser!['displayName'] ?? _foundUser!['email'],
-        'contactEmail': _foundUser!['email'],
+        'contactUid': _selectedUser!['uid'],
+        'contactName': _selectedUser!['displayName'] ?? 'Usuario',
+        'contactEmail': _selectedUser!['email'] ?? '',
         'deviceId': _selectedDeviceId!,
       }).future);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Solicitud enviada. El usuario debe aceptarla.'), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text('✓ Solicitud enviada. El usuario debe aceptarla.'),
+            backgroundColor: Colors.green,
+          ),
         );
         
         // Resetear formulario
-        _emailController.clear();
+        _usernameController.clear();
         setState(() {
-          _foundUser = null;
+          _selectedUser = null;
+          _searchResults = [];
           _userDevices = [];
           _selectedDeviceId = null;
         });
@@ -837,7 +856,10 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -869,7 +891,7 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
               const SizedBox(width: 16),
               Expanded(
                 child: Text(
-                  'Busca por email y selecciona tu dispositivo para enviar una solicitud',
+                  'Busca por nombre de usuario para enviar una solicitud de contacto',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurface,
                   ),
@@ -881,58 +903,98 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
         
         const SizedBox(height: 24),
         
-        // Campo de búsqueda
-        TextField(
-          controller: _emailController,
-          decoration: InputDecoration(
-            labelText: 'Email del contacto',
-            hintText: 'ejemplo@correo.com',
-            prefixIcon: const Icon(Icons.email_outlined),
-            suffixIcon: _emailController.text.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear),
-                  onPressed: () {
-                    _emailController.clear();
-                    setState(() {
-                      _foundUser = null;
-                      _userDevices = [];
-                    });
-                  },
-                )
-              : null,
-          ),
-          keyboardType: TextInputType.emailAddress,
-          onChanged: (value) => setState(() {}),
-        ),
-        
-        const SizedBox(height: 16),
-        
-        FilledButton.icon(
-          onPressed: _searching ? null : _searchUser,
-          icon: _searching 
-            ? SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: theme.colorScheme.onPrimary,
+        // Campo de búsqueda con Autocomplete
+        Autocomplete<Map<String, dynamic>>(
+          optionsBuilder: (TextEditingValue textEditingValue) {
+            if (textEditingValue.text.isEmpty) return const Iterable<Map<String, dynamic>>.empty();
+            return _searchResults.where((user) =>
+              (user['displayName'] as String? ?? '').toLowerCase().contains(textEditingValue.text.toLowerCase())
+            );
+          },
+          displayStringForOption: (option) => option['displayName'] ?? 'Usuario',
+          fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+            // Sincronizar el texto
+            textEditingController.text = _usernameController.text;
+            textEditingController.addListener(() {
+              _usernameController.text = textEditingController.text;
+              _searchUsers(textEditingController.text);
+            });
+            
+            return TextField(
+              controller: textEditingController,
+              focusNode: focusNode,
+              onChanged: (value) => _searchUsers(value),
+              decoration: InputDecoration(
+                labelText: 'Nombre de usuario',
+                hintText: 'Busca por nombre...',
+                prefixIcon: const Icon(Icons.person_search_outlined),
+                suffixIcon: textEditingController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        textEditingController.clear();
+                        _usernameController.clear();
+                        setState(() {
+                          _selectedUser = null;
+                          _searchResults = [];
+                          _userDevices = [];
+                        });
+                      },
+                    )
+                  : null,
+              ),
+              keyboardType: TextInputType.text,
+            );
+          },
+          onSelected: (Map<String, dynamic> selection) {
+            _usernameController.text = selection['displayName'] ?? 'Usuario';
+            _selectUser(selection);
+          },
+          optionsViewBuilder: (context, onSelected, options) {
+            return Align(
+              alignment: Alignment.topLeft,
+              child: Material(
+                elevation: 4.0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-              )
-            : const Icon(Icons.search, size: 22),
-          label: Text(
-            _searching ? 'Buscando...' : 'Buscar Usuario', 
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          style: FilledButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
+                child: Container(
+                  width: 300,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: theme.colorScheme.surface,
+                  ),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shrinkWrap: true,
+                    itemCount: options.length,
+                    itemBuilder: (BuildContext context, int index) {
+                      final option = options.elementAt(index);
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: theme.colorScheme.primaryContainer,
+                          child: Text(
+                            (option['displayName'] as String? ?? 'U').substring(0, 1).toUpperCase(),
+                            style: TextStyle(
+                              color: theme.colorScheme.onPrimaryContainer,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        title: Text(option['displayName'] ?? 'Usuario'),
+                        subtitle: Text(option['email'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        onTap: () => onSelected(option),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            );
+          },
         ),
         
         // Resultado de búsqueda
-        if (_foundUser != null) ...[
+        if (_selectedUser != null) ..[
           const SizedBox(height: 32),
           
           Card(
@@ -966,14 +1028,14 @@ class _AddContactTabState extends ConsumerState<_AddContactTab> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _foundUser!['displayName'] ?? 'Usuario',
+                              _selectedUser!['displayName'] ?? 'Usuario',
                               style: theme.textTheme.titleLarge?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              _foundUser!['email'] ?? '',
+                              _selectedUser!['email'] ?? '',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
