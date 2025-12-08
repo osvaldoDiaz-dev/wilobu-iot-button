@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:wilobu_app/firebase_providers.dart';
 import 'package:wilobu_app/features/contacts/presentation/contacts_page.dart';
+import 'package:wilobu_app/features/contacts/presentation/widgets/contacts_summary_widget.dart';
 import 'package:wilobu_app/features/auth/presentation/register_page.dart';
 import 'package:wilobu_app/theme/app_theme.dart';
 
@@ -626,6 +627,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                 error: (e, _) => Center(child: Text('Error: $e')),
               );
             }),
+            const SizedBox(height: 24),
+            // ===== NUEVA SECCIÓN: MIS CONTACTOS EN EL DASHBOARD =====
+            const MyContactsSummaryWidget(),
           ],
               ),
             ),
