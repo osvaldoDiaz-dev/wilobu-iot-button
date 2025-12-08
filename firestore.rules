@@ -20,6 +20,10 @@ service cloud.firestore {
       // Solo el dueño puede escribir su propio perfil
       allow write: if isOwner(userId);
       
+      // Permitir actualización de fcmTokens y lastTokenUpdate
+      allow update: if isOwner(userId) && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmTokens', 'lastTokenUpdate']);
+      
       // Subcolección de solicitudes de contacto
       match /contactRequests/{requestId} {
         // El dueño puede leer sus propias solicitudes
@@ -43,13 +47,10 @@ service cloud.firestore {
           request.auth.uid in resource.data.get('viewerUids', [])
         );
         
-        // Permitir update solo si se está añadiendo al array de emergencyContacts
-        // (cuando un usuario acepta una solicitud de contacto)
-        allow update: if isSignedIn() && 
-                         // Verificar que solo se está modificando emergencyContacts
-                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts']);
-        
-        // Subcolección de historial de alertas del dispositivo
+      // Permitir update solo si se está añadiendo al array de emergencyContacts, viewerUids, o monitored_devices
+      // (cuando un usuario acepta una solicitud de contacto)
+      allow update: if isSignedIn() && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts', 'viewerUids', 'monitored_devices']);        // Subcolección de historial de alertas del dispositivo
         match /alertHistory/{alertId} {
           // El dueño puede leer y escribir su historial
           allow read, write: if isOwner(userId);
@@ -76,13 +77,13 @@ service cloud.firestore {
     }
     
     // Regla especial para collectionGroup query de devices
-    // Permite buscar dispositivos donde el usuario es el dueño, viewer o contacto de emergencia
+    // Permite buscar dispositivos donde el usuario es el dueño o viewer
+    // También permite queries con whereIn por document ID
     match /{path=**}/devices/{deviceId} {
-      // Permitir leer si el usuario es el dueño, viewer o contacto de emergencia
       allow read: if isSignedIn() && (
         resource.data.get('ownerUid', '') == request.auth.uid ||
-        request.auth.uid in resource.data.get('emergencyContacts', []) ||
-        request.auth.uid in resource.data.get('viewerUids', [])
+        request.auth.uid in resource.data.get('viewerUids', []) ||
+        request.auth.uid in resource.data.get('monitored_devices', [])
       );
     }
   }

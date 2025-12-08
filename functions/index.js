@@ -5,6 +5,9 @@ const crypto = require('crypto');
 // Inicializar Firebase Admin SDK
 admin.initializeApp();
 
+// Función de migración
+exports.fixBidirectionalContacts = require('./fixContacts').fixBidirectionalContacts;
+
 // ===== CONFIGURACIÓN =====
 const NOTIFICATION_COOLDOWN = 5000;  // Esperar 5s antes de enviar duplicadas
 const MAX_FCM_TOKENS_PER_USER = 10;  // Máximo de dispositivos por usuario
@@ -904,6 +907,207 @@ exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
             error: 'Device lookup failed',
             message: error.message || 'Not found'
         });
+    }
+});
+
+// ===== NOTIFICACIÓN DE SOLICITUD DE CONTACTO =====
+exports.onContactRequestCreated = functions.firestore
+    .document('users/{userId}/contactRequests/{requestId}')
+    .onCreate(async (snap, context) => {
+        const { userId } = context.params;
+        const request = snap.data();
+        const fromUid = request.fromUserId;
+        
+        try {
+            const [userDoc, fromUserDoc] = await Promise.all([
+                admin.firestore().collection('users').doc(userId).get(),
+                admin.firestore().collection('users').doc(fromUid).get()
+            ]);
+            
+            if (!userDoc.exists) return null;
+            
+            const tokens = userDoc.data().fcmTokens || [];
+            if (!tokens.length) return null;
+            
+            const fromName = fromUserDoc.exists ? 
+                (fromUserDoc.data().name || fromUserDoc.data().email || 'Usuario') : 
+                'Usuario';
+            
+            const message = {
+                notification: {
+                    title: 'Nueva solicitud de contacto',
+                    body: `${fromName} quiere agregarte como contacto de emergencia`
+                },
+                data: {
+                    type: 'contact_request',
+                    fromUserId: fromUid,
+                    fromName: fromName
+                },
+                tokens
+            };
+            
+            const resp = await admin.messaging().sendMulticast(message);
+            
+            const invalid = [];
+            resp.responses.forEach((r, idx) => {
+                if (!r.success && r.error && (
+                    r.error.code === 'messaging/invalid-registration-token' ||
+                    r.error.code === 'messaging/registration-token-not-registered'
+                )) {
+                    invalid.push(tokens[idx]);
+                }
+            });
+            
+            if (invalid.length) {
+                await userDoc.ref.update({
+                    fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalid)
+                });
+            }
+            
+            console.log(`[CONTACT-REQUEST] Notificación enviada a ${userId}: ${resp.successCount} éxitos`);
+            return null;
+        } catch (error) {
+            console.error('[CONTACT-REQUEST] Error:', error);
+            return null;
+        }
+    });
+
+// ===== CLOUD FUNCTION: MIGRATE DEVICES =====
+/**
+ * Función para migrar dispositivos existentes y agregar campos faltantes
+ * Agregrar ownerUid, ownerName y viewerUids a dispositivos sin estos campos
+ */
+exports.migrateDevicesFields = functions.https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    const db = admin.firestore();
+    let count = 0;
+
+    try {
+        const usersSnapshot = await db.collection('users').get();
+
+        for (const userDoc of usersSnapshot.docs) {
+            const userId = userDoc.id;
+            const userData = userDoc.data();
+
+            const devicesSnapshot = await db
+                .collection('users')
+                .doc(userId)
+                .collection('devices')
+                .get();
+
+            const batch = db.batch();
+
+            for (const deviceDoc of devicesSnapshot.docs) {
+                const deviceData = deviceDoc.data();
+
+                // owner
+                const ownerUid = deviceData.ownerUid || userId;
+                const ownerName = deviceData.ownerName || userData.displayName || userData.name || 'Usuario';
+
+                // viewerUids: combinar existentes + contactos de emergencia
+                const existingViewers = Array.isArray(deviceData.viewerUids) ? deviceData.viewerUids : [];
+                const emergencyContacts = Array.isArray(deviceData.emergencyContacts) ? deviceData.emergencyContacts : [];
+                const emergencyUids = emergencyContacts
+                    .map((c) => (c && typeof c === 'object' ? c.uid : null))
+                    .filter((v) => typeof v === 'string');
+
+                const merged = Array.from(new Set([...existingViewers, ...emergencyUids]));
+
+                // Solo actualizar si falta owner o hay nuevos viewerUids
+                const needsOwner = deviceData.ownerUid !== ownerUid || deviceData.ownerName !== ownerName;
+                const needsViewers = merged.length !== existingViewers.length;
+
+                if (needsOwner || needsViewers) {
+                    const updateData = {
+                        ownerUid,
+                        ownerName,
+                        viewerUids: merged,
+                    };
+                    batch.update(deviceDoc.ref, updateData);
+                    count++;
+                }
+            }
+
+            if (!batch._ops || batch._ops.length === 0) continue;
+            await batch.commit();
+        }
+
+        return {
+            success: true,
+            migratedCount: count,
+            message: `Migrated ${count} devices`
+        };
+    } catch (error) {
+        console.error('[MIGRATE] Error:', error);
+        throw new functions.https.HttpsError('internal', error.message);
+    }
+});
+
+// ===== MIGRACIÓN: Agregar monitored_devices a usuarios =====
+/**
+ * Migra usuarios: agrega deviceIds a monitored_devices basado en viewerUids
+ * Invocación: firebase functions:shell -> migrateMonitoredDevices({})
+ */
+exports.migrateMonitoredDevices = functions.https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated');
+    }
+
+    const db = admin.firestore();
+    let count = 0;
+    let updated = 0;
+
+    try {
+        // Recorrer todos los usuarios
+        const usersSnapshot = await db.collection('users').get();
+
+        for (const userDoc of usersSnapshot.docs) {
+            const userId = userDoc.id;
+            const userData = userDoc.data();
+
+            // Recorrer todos los dispositivos de todos los usuarios
+            const allUsersDevices = await db.collectionGroup('devices').get();
+
+            const monitoredDevices = new Set();
+
+            // Buscar dispositivos donde este usuario es viewer
+            for (const deviceDoc of allUsersDevices.docs) {
+                const deviceData = deviceDoc.data();
+                const viewerUids = Array.isArray(deviceData.viewerUids) ? deviceData.viewerUids : [];
+
+                if (viewerUids.includes(userId)) {
+                    monitoredDevices.add(deviceDoc.id);
+                    count++;
+                }
+            }
+
+            // Si encontró dispositivos, actualizar usuario
+            if (monitoredDevices.size > 0) {
+                const existingMonitored = userData.monitored_devices || [];
+                const merged = Array.from(new Set([...existingMonitored, ...monitoredDevices]));
+
+                if (merged.length > existingMonitored.length) {
+                    await db.collection('users').doc(userId).update({
+                        monitored_devices: merged,
+                    });
+                    updated++;
+                    console.log(`[MIGRATE] Usuario ${userId}: agregados ${merged.length} dispositivos`);
+                }
+            }
+        }
+
+        return {
+            success: true,
+            devicesFound: count,
+            usersUpdated: updated,
+            message: `Migración completada: ${updated} usuarios actualizados`,
+        };
+    } catch (error) {
+        console.error('[MIGRATE_MONITORED] Error:', error);
+        throw new functions.https.HttpsError('internal', error.message);
     }
 });
 

@@ -1,4 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,32 +36,150 @@ class ViewerDevice {
 final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((ref) {
   final user = ref.watch(firebaseAuthProvider).currentUser;
   if (user == null) return const Stream.empty();
+
+  final uid = user.uid;
   final firestore = ref.watch(firestoreProvider);
-  return firestore.collectionGroup('devices').snapshots().map((snapshot) {
-    final result = <ViewerDevice>[];
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      final viewerUids = data['viewerUids'] as List<dynamic>?;
-      if (viewerUids == null) continue;
-      final isViewer = viewerUids.contains(user.uid);
-      if (!isViewer) continue;
-      final ownerUid = data['ownerUid'] as String? ?? '';
-      final ownerName = data['ownerName'] as String? ?? 'Usuario';
-      result.add(ViewerDevice(
-        ownerUid: ownerUid,
-        ownerName: ownerName,
-        deviceId: doc.id,
-        nickname: data['nickname'] as String?,
-        status: data['status'] ?? 'offline',
-        battery: (data['battery'] as num?)?.toInt(),
-        lastSeen: (data['lastSeen'] is Timestamp) ? (data['lastSeen'] as Timestamp).toDate() : null,
-      ));
-    }
-    return result;
-  }).handleError((error) {
-    print('[viewerDevicesProvider] Error: $error');
-    return <ViewerDevice>[];
-  });
+
+  return firestore
+      .collection('users')
+      .doc(uid)
+      .snapshots()
+      .asyncExpand((userDoc) async* {
+        if (!userDoc.exists) {
+          yield [];
+          return;
+        }
+        
+        final userData = userDoc.data() ?? {};
+        final monitoredDevices = List<String>.from(userData['monitored_devices'] ?? []);
+        
+        if (monitoredDevices.isEmpty) {
+          yield [];
+          return;
+        }
+        
+        // Obtener mapa de dispositivos -> owners desde system collection
+        final deviceMapDoc = await firestore.collection('system').doc('deviceOwnerMap').get();
+        final deviceMap = (deviceMapDoc.data()?['map'] as Map<String, dynamic>?) ?? {};
+        
+        // Agrupar por owner
+        final devicesByOwner = <String, List<String>>{};
+        
+        for (final deviceId in monitoredDevices) {
+          final ownerUid = deviceMap[deviceId] as String?;
+          if (ownerUid != null) {
+            devicesByOwner.putIfAbsent(ownerUid, () => []).add(deviceId);
+          }
+        }
+        
+        // Leer cada dispositivo directamente
+        final devices = <ViewerDevice>[];
+        
+        for (final entry in devicesByOwner.entries) {
+          final ownerUid = entry.key;
+          final deviceIds = entry.value;
+          
+          for (final deviceId in deviceIds) {
+            try {
+              final doc = await firestore
+                  .collection('users/$ownerUid/devices')
+                  .doc(deviceId)
+                  .get();
+              
+              if (!doc.exists) continue;
+              
+              final data = doc.data()!;
+              
+              final loc = data['lastLocation'];
+              double? lat, lng;
+
+              if (loc is Map<String, dynamic>) {
+                final gp = loc['geopoint'];
+                if (gp is GeoPoint) {
+                  lat = gp.latitude;
+                  lng = gp.longitude;
+                } else {
+                  lat = (loc['lat'] as num?)?.toDouble();
+                  lng = (loc['lng'] as num?)?.toDouble();
+                }
+              }
+
+              final lastSeen = (data['lastSeen'] as Timestamp?)?.toDate() ??
+                  (loc is Map<String, dynamic> ? (loc['timestamp'] as Timestamp?)?.toDate() : null);
+
+              devices.add(ViewerDevice(
+                ownerUid: data['ownerUid'] ?? ownerUid,
+                ownerName: data['ownerName'] ?? data['ownerEmail'] ?? 'Dueño',
+                deviceId: doc.id,
+                nickname: data['nickname'] as String?,
+                status: data['status'] ?? 'offline',
+                battery: (data['battery'] as num?)?.toInt(),
+                lastSeen: lastSeen,
+              ));
+            } catch (e) {
+              print('[viewerDevicesProvider] Error leyendo device $deviceId: $e');
+            }
+          }
+        }
+        
+        yield devices;
+        
+        // Stream de actualizaciones
+        if (devicesByOwner.isNotEmpty) {
+          await for (final _ in Stream.periodic(const Duration(seconds: 10))) {
+            final updatedDevices = <ViewerDevice>[];
+            
+            for (final entry in devicesByOwner.entries) {
+              final ownerUid = entry.key;
+              final deviceIds = entry.value;
+              
+              for (final deviceId in deviceIds) {
+                try {
+                  final doc = await firestore
+                      .collection('users/$ownerUid/devices')
+                      .doc(deviceId)
+                      .get();
+                  
+                  if (!doc.exists) continue;
+                  
+                  final data = doc.data()!;
+                  
+                  final loc = data['lastLocation'];
+                  double? lat, lng;
+
+                  if (loc is Map<String, dynamic>) {
+                    final gp = loc['geopoint'];
+                    if (gp is GeoPoint) {
+                      lat = gp.latitude;
+                      lng = gp.longitude;
+                    } else {
+                      lat = (loc['lat'] as num?)?.toDouble();
+                      lng = (loc['lng'] as num?)?.toDouble();
+                    }
+                  }
+
+                  final lastSeen = (data['lastSeen'] as Timestamp?)?.toDate() ??
+                      (loc is Map<String, dynamic> ? (loc['timestamp'] as Timestamp?)?.toDate() : null);
+
+                  updatedDevices.add(ViewerDevice(
+                    ownerUid: data['ownerUid'] ?? ownerUid,
+                    ownerName: data['ownerName'] ?? data['ownerEmail'] ?? 'Dueño',
+                    deviceId: doc.id,
+                    nickname: data['nickname'] as String?,
+                    status: data['status'] ?? 'offline',
+                    battery: (data['battery'] as num?)?.toInt(),
+                    lastSeen: lastSeen,
+                  ));
+                } catch (e) {
+                  print('[viewerDevicesProvider] Error actualizando: $e');
+                }
+              }
+            }
+            
+            yield updatedDevices;
+          }
+        }
+      });
 });
 
 // Card genérica para dispositivos (viewer o contacto)
@@ -399,37 +519,11 @@ final monitoringContactsProvider = StreamProvider.autoDispose<List<MonitoringCon
   final user = ref.watch(firebaseAuthProvider).currentUser;
   if (user == null) return const Stream.empty();
   final firestore = ref.watch(firestoreProvider);
-  return firestore.collectionGroup('devices').snapshots().asyncMap((snapshot) async {
-    final contacts = <MonitoringContact>[];
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      final ownerUid = data['ownerUid'] as String?;
-      if (ownerUid == null || ownerUid == user.uid) continue;
-      final emergencyContacts = data['emergencyContacts'] as List<dynamic>? ?? [];
-      final isContact = emergencyContacts.any((c) => c is Map && c['uid'] == user.uid);
-      if (!isContact) continue;
-      final ownerDoc = await firestore.collection('users').doc(ownerUid).get();
-      final ownerData = ownerDoc.data() ?? {};
-      final loc = data['lastLocation'];
-      double? lat, lng;
-      if (loc is Map<String, dynamic>) {
-        final gp = loc['geopoint'];
-        if (gp is GeoPoint) { lat = gp.latitude; lng = gp.longitude; }
-      }
-      contacts.add(MonitoringContact(
-        uid: ownerUid, displayName: ownerData['name'] as String?,
-        username: ownerData['username'] as String?, email: ownerData['email'] as String?,
-        deviceId: doc.id, lat: lat, lng: lng,
-        battery: (data['battery'] as num?)?.toInt(),
-        status: data['status'] ?? 'offline',
-        lastSeen: (data['lastSeen'] as Timestamp?)?.toDate(),
-      ));
-    }
-    return contacts;
-  }).handleError((error) {
-    print('[monitoringContactsProvider] Error: $error');
-    return <MonitoringContact>[];
-  });
+  
+  // No podemos usar collectionGroup con emergencyContacts porque es un array de objetos
+  // En su lugar, retornamos lista vacía por ahora
+  // TODO: Implementar índice emergencyContactUids: [uid1, uid2] en dispositivos
+  return Stream.value(<MonitoringContact>[]);
 });
 
 // ===== PAGINA PRINCIPAL =====
@@ -485,6 +579,29 @@ class _HomePageState extends ConsumerState<HomePage> {
         backgroundColor: background != null ? Colors.transparent : null,
         elevation: 0,
         actions: [
+          if (kDebugMode)
+            IconButton(
+              icon: const Icon(Icons.build),
+              tooltip: 'Reparar enlaces',
+              onPressed: () async {
+                try {
+                  await FirebaseFunctions.instance
+                      .httpsCallable('migrateDevicesFields')
+                      .call();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Migración ejecutada')),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error: $e')),
+                    );
+                  }
+                }
+              },
+            ),
           Consumer(builder: (_, ref, __) {
             final theme = ref.watch(themeControllerProvider);
             final icon = switch (theme) {
@@ -559,14 +676,23 @@ class _HomePageState extends ConsumerState<HomePage> {
               visualDensity: VisualDensity.compact,
             ),
             const SizedBox(height: 4),
-            ListTile(
-              leading: Icon(Icons.people, color: Theme.of(context).colorScheme.primary),
-              title: const Text('Contactos'),
-              onTap: () { Navigator.pop(context); context.push('/contacts'); },
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              visualDensity: VisualDensity.compact,
-            ),
+            Consumer(builder: (_, ref, __) {
+              final requests = ref.watch(contactRequestsProvider);
+              final count = requests.valueOrNull?.length ?? 0;
+              return ListTile(
+                leading: Icon(Icons.people, color: Theme.of(context).colorScheme.primary),
+                title: const Text('Contactos'),
+                trailing: count > 0 ? Badge(
+                  label: Text('$count'),
+                  backgroundColor: Colors.red,
+                  child: const SizedBox.shrink(),
+                ) : null,
+                onTap: () { Navigator.pop(context); context.push('/contacts'); },
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                visualDensity: VisualDensity.compact,
+              );
+            }),
             const SizedBox(height: 12),
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16),

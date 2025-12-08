@@ -157,10 +157,17 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
       };
 
       await deviceRef.update({
-        'emergencyContacts': FieldValue.arrayUnion([myData])
+        'emergencyContacts': FieldValue.arrayUnion([myData]),
+        // Agregar el UID del usuario actual al campo viewerUids para que pueda ver el dispositivo
+        'viewerUids': FieldValue.arrayUnion([user.uid])
       });
 
-      // 2. Eliminar la solicitud
+      // 2. Agregar deviceId a monitored_devices del usuario actual
+      await firestore.collection('users').doc(user.uid).update({
+        'monitored_devices': FieldValue.arrayUnion([widget.request.deviceId]),
+      });
+
+      // 3. Eliminar la solicitud
       await firestore
           .collection('users')
           .doc(user.uid)

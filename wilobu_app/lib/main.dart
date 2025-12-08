@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'router.dart';
 import 'theme/app_theme.dart';
 import 'firebase_options.dart';
+import 'firebase_providers.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +24,14 @@ class WilobuApp extends ConsumerWidget {
     final router = ref.watch(appRouterProvider);
     final themeMode = ref.watch(themeControllerProvider);
     final theme = AppTheme.getTheme(themeMode);
+    
+    // Inicializar FCM cuando el usuario se autentique
+    ref.listen(firebaseAuthProvider, (previous, next) {
+      final user = next.currentUser;
+      if (user != null) {
+        ref.read(fcmServiceProvider).initialize();
+      }
+    });
 
     return MaterialApp.router(
       debugShowCheckedModeBanner: false,

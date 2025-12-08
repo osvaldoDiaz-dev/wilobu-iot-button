@@ -151,10 +151,21 @@ class _ContactsPageState extends ConsumerState<ContactsPage> with SingleTickerPr
               labelColor: theme.colorScheme.onPrimaryContainer,
               unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
               labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-              tabs: const [
-                Tab(icon: Icon(Icons.people_outline), text: 'Contactos'),
-                Tab(icon: Icon(Icons.inbox_outlined), text: 'Solicitudes'),
-                Tab(icon: Icon(Icons.person_add_outlined), text: 'Añadir'),
+              tabs: [
+                const Tab(icon: Icon(Icons.people_outline), text: 'Contactos'),
+                Consumer(builder: (_, ref, __) {
+                  final requests = ref.watch(contactRequestsProvider);
+                  final count = requests.valueOrNull?.length ?? 0;
+                  return Tab(
+                    icon: Badge(
+                      isLabelVisible: count > 0,
+                      label: Text('$count'),
+                      child: const Icon(Icons.inbox_outlined),
+                    ),
+                    text: 'Solicitudes',
+                  );
+                }),
+                const Tab(icon: Icon(Icons.person_add_outlined), text: 'Añadir'),
               ],
             ),
           ),
@@ -534,9 +545,25 @@ class _RequestCardState extends ConsumerState<_RequestCard> {
             'name': user.displayName ?? user.email ?? 'Usuario',
           }
         ]),
+        // Agregar viewerUids para que pueda ver el dispositivo
+        'viewerUids': FieldValue.arrayUnion([user.uid]),
       });
 
-      // 2. Eliminar solicitud
+      // 2. Agregar deviceId del owner a monitored_devices del viewer
+      await firestore.collection('users').doc(user.uid).update({
+        'monitored_devices': FieldValue.arrayUnion([deviceRef.id]),
+      });
+
+      // 3. RELACIÓN BIDIRECCIONAL: Añadir dispositivos del viewer a monitored_devices del owner
+      final viewerDevices = await firestore.collection('users/${user.uid}/devices').get();
+      if (viewerDevices.docs.isNotEmpty) {
+        final viewerDeviceIds = viewerDevices.docs.map((doc) => doc.id).toList();
+        await firestore.collection('users').doc(widget.request.fromUid).update({
+          'monitored_devices': FieldValue.arrayUnion(viewerDeviceIds),
+        });
+      }
+
+      // 4. Eliminar solicitud
       await firestore.collection('users/${user.uid}/contactRequests').doc(widget.request.id).delete();
 
       if (mounted) {

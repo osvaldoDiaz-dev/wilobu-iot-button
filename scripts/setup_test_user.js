@@ -79,6 +79,7 @@ async function setupTestUser() {
   console.log('3. Configurando dispositivo...');
   await deviceRef.set({
     ownerUid: TEST_USER.uid,
+    ownerName: TEST_USER.displayName,
     status: TEST_DEVICE.status,
     lastSeen: admin.firestore.FieldValue.serverTimestamp(),
     lastLocation: {
@@ -90,6 +91,7 @@ async function setupTestUser() {
       name: c.name,
       relation: c.relation
     })),
+    viewerUids: ['contact_familia_001', 'contact_amigo_002'],
     sosMessages: {
       general: '¡Necesito ayuda urgente!',
       medica: 'Emergencia médica, por favor llamen a una ambulancia',
@@ -101,7 +103,7 @@ async function setupTestUser() {
       { uid: 'viewer_002', name: 'Luis Observador' }
     ]
   }, { merge: true });
-  console.log(`   ✓ Dispositivo ${TEST_DEVICE.id} configurado\n`);
+  console.log(`   ✓ Dispositivo ${TEST_DEVICE.id} configurado con viewerUids\n`);
   
   // 4. Crear historial de alertas enviadas
   console.log('4. Creando historial de alertas enviadas...');
