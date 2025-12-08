@@ -37,6 +37,7 @@ public:
     bool sendToFirebase(const String& path, const String& jsonData) override;
     bool sendSOSAlert(const String& sosType, const GPSLocation& location) override;
     bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) override;
+    String checkProvisioningStatus(const String& deviceId) override;
     bool sendToCloudFunction(const String& functionPath, const String& jsonData);
     
     bool initGNSS() override;

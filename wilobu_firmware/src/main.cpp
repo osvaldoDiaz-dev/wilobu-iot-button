@@ -207,7 +207,12 @@ void setupModem() {
         #endif
         
         if (modem->init() && modem->connect()) {
-                LOG_INFO(String("Conectado a ") + baudrates[b]);
+            LOG_INFO(String("Conectado a ") + baudrates[b]);
+            
+            // Intentar auto-recuperación si no está aprovisionado
+            if (!isProvisioned) {
+                attemptAutoRecovery();
+            }
             return;
         }
         
@@ -468,6 +473,36 @@ void updateLocation() {
     }
     
     lastLocationUpdate = millis();
+}
+
+// ===== AUTO-RECUPERACIÓN DE APROVISIONAMIENTO =====
+// Intenta recuperar el ownerUid desde Firestore si el dispositivo existe pero no está aprovisionado localmente
+void attemptAutoRecovery() {
+    if (isProvisioned || !modem || !modem->isConnected()) {
+        return;
+    }
+    
+    Serial.println("[AUTO-RECOVER] Dispositivo no aprovisionado localmente - Intentando recuperación...");
+    String recoveredOwnerUid = modem->checkProvisioningStatus(deviceId);
+    
+    if (recoveredOwnerUid.length() > 0) {
+        // ¡Encontrado! Aprovisionar automáticamente
+        ownerUid = recoveredOwnerUid;
+        preferences.begin("wilobu", false);
+        preferences.putString("ownerUid", ownerUid);
+        preferences.putBool("provisioned", true);
+        preferences.end();
+        
+        isProvisioned = true;
+        Serial.println("[AUTO-RECOVER] ✓✓✓ Dispositivo auto-aprovisionado exitosamente");
+        Serial.println("[AUTO-RECOVER] Owner UID: " + ownerUid);
+        
+        // Cambiar a estado ONLINE
+        deviceState = DeviceState::ONLINE;
+        digitalWrite(PIN_LED_ESTADO, HIGH);
+    } else {
+        Serial.println("[AUTO-RECOVER] Dispositivo no encontrado en Firestore - Requiere vinculación manual");
+    }
 }
 
 // ===== ENVÍO PERIÓDICO DE HEARTBEAT =====

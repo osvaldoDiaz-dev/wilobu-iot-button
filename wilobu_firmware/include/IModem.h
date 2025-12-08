@@ -39,6 +39,9 @@ public:
     virtual bool sendSOSAlert(const String& sosType, const GPSLocation& location) = 0;
     virtual bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) = 0;
     
+    // ===== MÉTODO DE AUTO-RECUPERACIÓN =====
+    virtual String checkProvisioningStatus(const String& deviceId) = 0;
+    
     // ===== MÉTODOS DE POSICIONAMIENTO =====
     virtual bool initGNSS() = 0;
     virtual bool getLocation(GPSLocation& location) = 0;

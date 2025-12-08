@@ -726,4 +726,79 @@ exports.cleanupUnprovisionedDevices = functions.pubsub
         }
     });
 
+// ===== CLOUD FUNCTION: CHECK DEVICE STATUS (HTTP) =====
+/**
+ * Verifica si un dispositivo existe en Firestore y devuelve su ownerUid
+ * Usado para auto-recuperación cuando el firmware pierde configuración local
+ * Endpoint: https://us-central1-wilobu-d21b2.cloudfunctions.net/checkDeviceStatus
+ */
+exports.checkDeviceStatus = functions.https.onRequest(async (req, res) => {
+    // CORS
+    res.set('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+        res.set('Access-Control-Allow-Methods', 'POST');
+        res.set('Access-Control-Allow-Headers', 'Content-Type');
+        return res.status(204).send('');
+    }
+    
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
+    
+    try {
+        const { deviceId } = req.body;
+        
+        // Validar campo requerido
+        if (!deviceId) {
+            return res.status(400).json({ error: 'deviceId required' });
+        }
+        
+        console.log('[CHECK_DEVICE] Buscando dispositivo:', deviceId);
+        
+        // Buscar el dispositivo en todos los usuarios (collectionGroup query)
+        const devicesSnapshot = await admin.firestore()
+            .collectionGroup('devices')
+            .where(admin.firestore.FieldPath.documentId(), '==', deviceId)
+            .limit(1)
+            .get();
+        
+        if (devicesSnapshot.empty) {
+            console.log('[CHECK_DEVICE] Dispositivo no encontrado:', deviceId);
+            return res.status(404).json({ 
+                error: 'Device not found',
+                message: 'Este dispositivo no está vinculado a ninguna cuenta'
+            });
+        }
+        
+        const deviceDoc = devicesSnapshot.docs[0];
+        const deviceData = deviceDoc.data();
+        const ownerUid = deviceData.ownerUid;
+        
+        if (!ownerUid) {
+            console.log('[CHECK_DEVICE] Dispositivo sin ownerUid:', deviceId);
+            return res.status(404).json({ 
+                error: 'Invalid device data',
+                message: 'El dispositivo no tiene un propietario asignado'
+            });
+        }
+        
+        console.log('[CHECK_DEVICE] ✓ Dispositivo encontrado:', deviceId, '-> Owner:', ownerUid);
+        
+        // Devolver ownerUid para que el firmware se auto-aprovisione
+        return res.status(200).json({
+            success: true,
+            deviceId: deviceId,
+            ownerUid: ownerUid,
+            message: 'Dispositivo encontrado - auto-aprovisionamiento disponible'
+        });
+        
+    } catch (error) {
+        console.error('[CHECK_DEVICE] Error:', error);
+        return res.status(500).json({ 
+            error: 'Internal server error',
+            message: error.message 
+        });
+    }
+});
+
 module.exports = module.exports;

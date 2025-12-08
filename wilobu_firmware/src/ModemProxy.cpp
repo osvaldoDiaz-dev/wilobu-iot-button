@@ -389,6 +389,35 @@ bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, c
     return true;
 }
 
+// ===== AUTO-RECUPERACIÓN DE APROVISIONAMIENTO =====
+String ModemProxy::checkProvisioningStatus(const String& deviceId) {
+    Serial.println("[AUTO-RECOVER] Verificando estado en Firestore...");
+    JsonDocument doc;
+    doc["deviceId"] = deviceId;
+    String json; serializeJson(doc, json);
+    String response = httpPost("https://us-central1-wilobu-d21b2.cloudfunctions.net/checkDeviceStatus", json);
+    
+    if (response.isEmpty()) {
+        Serial.println("[AUTO-RECOVER] Sin respuesta del servidor");
+        return "";
+    }
+    
+    // Buscar ownerUid en la respuesta JSON
+    int ownerIdx = response.indexOf("\"ownerUid\":\"");
+    if (ownerIdx == -1) {
+        Serial.println("[AUTO-RECOVER] Dispositivo no encontrado en Firestore");
+        return "";
+    }
+    
+    ownerIdx += 12; // Saltar "ownerUid":"
+    int endIdx = response.indexOf("\"", ownerIdx);
+    if (endIdx == -1) return "";
+    
+    String ownerUid = response.substring(ownerIdx, endIdx);
+    Serial.println("[AUTO-RECOVER] ✓ Dispositivo encontrado - Owner: " + ownerUid);
+    return ownerUid;
+}
+
 // ===== GPS =====
 bool ModemProxy::initGNSS() {
     if (gpsEnabled) return true;

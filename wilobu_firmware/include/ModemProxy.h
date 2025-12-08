@@ -45,6 +45,7 @@ public:
     bool sendSOSAlert(const String& sosType, const GPSLocation& location) override;
     bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) override;
     bool sendToFirebaseFunction(const String& functionPath, const String& jsonData);
+    String checkProvisioningStatus(const String& deviceId) override;
     
     bool initGNSS() override;
     bool getLocation(GPSLocation& location) override;
