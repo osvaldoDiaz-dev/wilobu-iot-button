@@ -153,9 +153,13 @@ String ModemProxy::httpPost(const String& path, const String& json) {
         return "";
     }
     
+    // Intentar cerrar sesión previa (puede fallar si no hay sesión, es normal)
     sendATCommand("AT+HTTPTERM", 500);
+    
+    // Iniciar nueva sesión
     if (sendATCommand("AT+HTTPINIT", 2000).indexOf("OK") == -1) {
         Serial.println("[HTTP] Error: HTTPINIT fallo");
+        lastHttpStatus = -1;
         return "";
     }
     
@@ -356,19 +360,20 @@ bool ModemProxy::sendToFirebase(const String& path, const String& json) { return
 bool ModemProxy::sendToFirebaseFunction(const String& path, const String& json) { return !httpPost(path, json).isEmpty(); }
 
 // ===== SOS & HEARTBEAT =====
-bool ModemProxy::sendSOSAlert(const String& sosType, const GPSLocation& loc) {
+bool ModemProxy::sendSOSAlert(const String& deviceId, const String& ownerUid, const String& sosType, const GPSLocation& loc) {
     JsonDocument doc;
-    doc["deviceId"] = "";
-    doc["ownerUid"] = "";
+    doc["deviceId"] = deviceId;
+    doc["ownerUid"] = ownerUid;
     doc["status"] = "sos_" + sosType;
-    doc["sosType"] = sosType;
     if (loc.isValid) {
-        doc["lastLocation"]["latitude"] = loc.latitude;
-        doc["lastLocation"]["longitude"] = loc.longitude;
+        doc["lastLocation"]["lat"] = loc.latitude;
+        doc["lastLocation"]["lng"] = loc.longitude;
         doc["lastLocation"]["accuracy"] = loc.accuracy;
+    } else {
+        doc["lastLocation"] = nullptr;
     }
     String json; serializeJson(doc, json);
-    return !httpPost("/send", json).isEmpty();
+    return !httpPost("https://us-central1-wilobu-d21b2.cloudfunctions.net/heartbeat", json).isEmpty();
 }
 
 bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& loc) {
@@ -378,8 +383,8 @@ bool ModemProxy::sendHeartbeat(const String& ownerUid, const String& deviceId, c
     doc["status"] = "online";
     doc["timestamp"] = millis();
     if (loc.isValid) {
-        doc["lastLocation"]["latitude"] = loc.latitude;
-        doc["lastLocation"]["longitude"] = loc.longitude;
+        doc["lastLocation"]["lat"] = loc.latitude;
+        doc["lastLocation"]["lng"] = loc.longitude;
         doc["lastLocation"]["accuracy"] = loc.accuracy;
     }
     String json; serializeJson(doc, json);
@@ -457,88 +462,147 @@ bool ModemProxy::initGNSS() {
         return false;
     }
 
-    // Try several common GNSS enable commands for different modules
-    const char* cmds[] = { "AT+CGPS=1,1", "AT+CGNSPWR=1", "AT+QGPS=1" };
-    for (int i = 0; i < (int)(sizeof(cmds)/sizeof(cmds[0])); ++i) {
-        String r = sendATCommand(String(cmds[i]), 5000);
-        if (r.indexOf("OK") != -1) {
-            gpsEnabled = true;
-            gnssFailCount = 0;
-            nextGnssRetryMs = millis();
-            return true;
-        }
+    Serial.println("[GPS] Activando GNSS en A7670SA...");
+    
+    // Paso 1: Energizar GNSS
+    String r = sendATCommand("AT+CGNSSPWR=1", 5000);
+    if (r.indexOf("ERROR") != -1) {
+        Serial.println("[GPS] ✗ Error en AT+CGNSSPWR=1");
+        gpsEnabled = false;
+        gnssFailCount++;
+        unsigned long delayMs = (gnssFailCount == 1) ? 5000UL : (gnssFailCount == 2 ? 30000UL : 300000UL);
+        nextGnssRetryMs = millis() + delayMs;
+        return false;
     }
-    gpsEnabled = false;
-    gnssFailCount++;
-    // Backoff progresivo: 5s, 30s, 5min
-    unsigned long delayMs = (gnssFailCount == 1) ? 5000UL : (gnssFailCount == 2 ? 30000UL : 300000UL);
-    nextGnssRetryMs = millis() + delayMs;
-    return false;
+    
+    // Paso 2: Esperar READY! (hasta 10s)
+    Serial.println("[GPS] Esperando +CGNSSPWR: READY!...");
+    unsigned long start = millis();
+    bool ready = false;
+    while (millis() - start < 10000) {
+        while (modemSerial->available()) {
+            String line = modemSerial->readStringUntil('\n');
+            if (line.indexOf("READY") != -1) {
+                ready = true;
+                Serial.println("[GPS] ✓ GNSS READY");
+                break;
+            }
+        }
+        if (ready) break;
+        delay(100);
+    }
+    
+    if (!ready) {
+        Serial.println("[GPS] ⚠️ Timeout esperando READY, continuando...");
+    }
+    
+    // Paso 3: Activar salida de datos
+    sendATCommand("AT+CGNSSTST=1", 2000);
+    
+    // Paso 4: Configurar puerto NMEA
+    sendATCommand("AT+CGNSSPORTSWITCH=0,1", 2000);
+    
+    Serial.println("[GPS] ✓ GNSS activado");
+    gpsEnabled = true;
+    gnssFailCount = 0;
+    nextGnssRetryMs = millis();
+    delay(2000); // Dar tiempo al GPS para inicializar
+    return true;
 }
 
 bool ModemProxy::getLocation(GPSLocation& loc) {
-    if (!gpsEnabled && !initGNSS()) return false;
-    String r = sendATCommand("AT+CGPSINF=0", 2000);
-    if (r.indexOf("+CGPSINF") == -1) { loc.isValid = false; return false; }
-
-    int colon = r.indexOf(":");
-    String payload = colon != -1 ? r.substring(colon + 1) : r;
-    payload.replace("\r", "");
-    payload.replace("\n", "");
-    payload.trim();
-
-    int modeSep = payload.indexOf(',');
-    if (modeSep != -1) payload = payload.substring(modeSep + 1);
-
-    char buf[160];
-    payload.toCharArray(buf, sizeof(buf));
-    char* save;
-    char* token = strtok_r(buf, ",", &save);
-    if (!token) { loc.isValid = false; return false; }
-    String latStr(token);
-
-    token = strtok_r(nullptr, ",", &save);
-    if (!token) { loc.isValid = false; return false; }
-    String next(token);
-
-    String lonStr;
-    String latDir;
-    String lonDir;
-
-    if (next.length() == 1 && !isdigit(next[0])) {
-        latDir = next;
-        lonStr = String(strtok_r(nullptr, ",", &save) ?: "");
-        lonDir = String(strtok_r(nullptr, ",", &save) ?: "");
-    } else {
-        lonStr = next;
-        lonDir = String(strtok_r(nullptr, ",", &save) ?: "");
+    if (!gpsEnabled && !initGNSS()) {
+        loc.isValid = false;
+        return false;
+    }
+    
+    // Para A7670SA usar AT+CGPSINFO
+    String r = sendATCommand("AT+CGPSINFO", 3000);
+    
+    if (r.indexOf("+CGPSINFO") == -1) {
+        loc.isValid = false;
+        return false;
     }
 
-    auto toDecimal = [&](const String& val, const String& dir) {
-        if (val.isEmpty()) return 0.0f;
-        float raw = val.toFloat();
-        float decimal;
-        int dot = val.indexOf('.');
-        if (dot >= 0 && dot <= 2) {
-            decimal = raw;
+    // Formato: +CGPSINFO: <lat>,<N/S>,<lon>,<E/W>,<date>,<UTC>,<alt>,<speed>,<course>
+    // Ejemplo: +CGPSINFO: 4043.000000,N,07400.000000,W,250422,123045.0,0.0,0.0,0.0
+    
+    int colon = r.indexOf(":");
+    if (colon == -1) {
+        loc.isValid = false;
+        return false;
+    }
+    
+    String data = r.substring(colon + 1);
+    data.trim();
+    
+    // Si retorna vacío o sin fix
+    if (data.length() < 10 || data.startsWith(",,,")) {
+        Serial.println("[GPS] Sin fix GPS");
+        loc.isValid = false;
+        return false;
+    }
+    
+    // Parsear: lat,dir,lon,dir,...
+    int idx = 0;
+    String parts[9];
+    int partIdx = 0;
+    
+    for (int i = 0; i < data.length() && partIdx < 9; i++) {
+        if (data[i] == ',') {
+            partIdx++;
         } else {
-            int deg = (int)(raw / 100);
-            float minutes = raw - (deg * 100);
-            decimal = deg + (minutes / 60.0f);
+            parts[partIdx] += data[i];
         }
-        if (dir.equalsIgnoreCase("S") || dir.equalsIgnoreCase("W")) decimal *= -1.0f;
+    }
+    
+    if (partIdx < 4) {
+        loc.isValid = false;
+        return false;
+    }
+    
+    String latStr = parts[0];    // "4043.000000"
+    String latDir = parts[1];    // "N" o "S"
+    String lonStr = parts[2];    // "07400.000000"
+    String lonDir = parts[3];    // "E" o "W"
+    
+    if (latStr.length() == 0 || lonStr.length() == 0) {
+        loc.isValid = false;
+        return false;
+    }
+    
+    // Convertir formato DDMM.MMMMMM a decimal
+    auto toDecimal = [](const String& val, const String& dir) -> float {
+        float raw = val.toFloat();
+        if (raw == 0.0f) return 0.0f;
+        
+        int deg = (int)(raw / 100);
+        float minutes = raw - (deg * 100);
+        float decimal = deg + (minutes / 60.0f);
+        
+        if (dir == "S" || dir == "W") decimal *= -1.0f;
         return decimal;
     };
-
+    
     loc.latitude = toDecimal(latStr, latDir);
     loc.longitude = toDecimal(lonStr, lonDir);
     loc.accuracy = 10.0;
     loc.timestamp = millis();
     loc.isValid = (loc.latitude != 0.0f || loc.longitude != 0.0f);
+    
+    if (loc.isValid) {
+        Serial.printf("[GPS] Fix válido: %.6f, %.6f\n", loc.latitude, loc.longitude);
+    }
+    
     return loc.isValid;
 }
 
-void ModemProxy::disableGNSS() { if (gpsEnabled) { sendATCommand("AT+CGPS=0", 2000); gpsEnabled = false; } }
+void ModemProxy::disableGNSS() { 
+    if (gpsEnabled) { 
+        sendATCommand("AT+CGPS=0", 2000); 
+        gpsEnabled = false; 
+    } 
+}
 
 // ===== POWER & OTA STUBS =====
 void ModemProxy::enableDeepSleep(unsigned long sec) { if (connected) disconnect(); disableGNSS(); deepSleeping = true; }

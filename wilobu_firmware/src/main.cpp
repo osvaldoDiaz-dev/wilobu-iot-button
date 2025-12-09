@@ -36,8 +36,8 @@ int logLevel = 1; // 0=ERROR, 1=INFO, 2=DEBUG (configurable)
 #define PIN_BTN_MEDICA    5   // Botón SOS Médica
 #define PIN_BTN_SEGURIDAD 13  // Botón SOS Seguridad
 #define PIN_SWITCH_PWR    27  // Switch de encendido
-#define PIN_LED_ESTADO    23  // LED estado (Azul)
-#define PIN_LED_AUX       19  // LED auxiliar (Verde, solo Hardware B)
+#define PIN_LED_LINK      23  // LED Link/Estado (Azul) - Vinculación y estado general
+#define PIN_LED_ALERT     19  // LED Alert (Rojo) - Solo alertas SOS
 
 // ===== CONFIGURACIÓN BLE =====
 // UUIDs y nombre BLE para aprovisionamiento
@@ -50,6 +50,7 @@ int logLevel = 1; // 0=ERROR, 1=INFO, 2=DEBUG (configurable)
 
 // ===== CONSTANTES =====
 // Tiempos y parámetros globales del sistema
+#define DEEP_SLEEP_ENABLED     false // Cambiar a true en producción
 #define DEEP_SLEEP_TIME        3600  // 1 hora en modo idle
 #define GPS_COLD_START_TIME    45000 // 45 segundos para GPS "cold start"
 #define LOCATION_UPDATE_INTERVAL 30000 // Actualizar ubicación cada 30s
@@ -86,14 +87,12 @@ bool isProvisioned = false;
 bool lastHeartbeatOk = false; // true solo cuando el heartbeat recibe 2xx
 unsigned long bootTimestamp = 0;
 
-// Ventana de parpadeo en arranque para dispositivos sin provisionar
-const unsigned long UNPROV_BLINK_WINDOW_MS = 15000UL; // 15s de "estoy vivo"
-
 // Localización
 GPSLocation lastLocation = {0.0, 0.0, 999.0, 0, false};
 unsigned long lastLocationUpdate = 0;
 unsigned long lastHeartbeat = 0;
 bool firstHeartbeatSent = false;
+bool isOTAInProgress = false;
 
 // BLE
 NimBLEServer* pServer = nullptr;
@@ -256,50 +255,82 @@ void setupPins() {
     pinMode(PIN_SWITCH_PWR, INPUT_PULLUP);
     
     // Salida (LEDs)
-    pinMode(PIN_LED_ESTADO, OUTPUT);
-    digitalWrite(PIN_LED_ESTADO, LOW);
+    pinMode(PIN_LED_LINK, OUTPUT);
+    digitalWrite(PIN_LED_LINK, LOW);
     
     #if defined(HARDWARE_B) || defined(HARDWARE_C)
-        pinMode(PIN_LED_AUX, OUTPUT);
-        digitalWrite(PIN_LED_AUX, LOW);
+        pinMode(PIN_LED_ALERT, OUTPUT);
+        digitalWrite(PIN_LED_ALERT, LOW);
     #endif
     
     Serial.println("[SETUP] ✓ Pines configurados");
 }
 
-// ===== ENVÍO DE ALERTA SOS =====
-// Obtiene ubicación y envía alerta SOS vía módem
+// ===== ENVÍO DE ALERTA SOS (2 DISPAROS) =====
+// Disparo 1: Inmediato con ubicación NULL (Backend busca lastLocation)
+// Disparo 2: Preciso con coordenadas reales si GPS está disponible
 void sendSOSAlert(const String& sosType) {
-    Serial.println("[SOS] Enviando: " + sosType);
+    Serial.println("[SOS] Iniciando alerta: " + sosType);
 
-    if (!modem) {
-        Serial.println("[SOS] ✗ Modem no inicializado - abortando envío");
+    if (!modem || !modem->isConnected()) {
+        Serial.println("[SOS] ✗ Modem no disponible");
         return;
     }
 
-    // Obtener ubicación (esperar hasta GPS_COLD_START_TIME ms)
+    // LED parpadea RÁPIDO durante el proceso SOS
+    unsigned long sosStart = millis();
+    
+    // ===== DISPARO 1: INMEDIATO (ubicación NULL) =====
+    Serial.println("[SOS] DISPARO 1: Enviando alerta vacía (Backend consulta lastLocation)...");
+    GPSLocation emptyLocation = {0.0, 0.0, 999.0, 0, false}; // GPS inválido
+    bool sent1 = modem->sendSOSAlert(deviceId, ownerUid, sosType, emptyLocation);
+    
+    if (!sent1) {
+        Serial.println("[SOS] ✗ DISPARO 1 falló");
+        return;
+    }
+    Serial.println("[SOS] ✓ DISPARO 1 exitoso");
+    
+    // ===== ESPERA ACTIVA PARA GPS =====
+    Serial.println("[SOS] Iniciando búsqueda GPS (cold start)...");
     modem->initGNSS();
-    unsigned long start = millis();
-    while (!lastLocation.isValid && (millis() - start) < GPS_COLD_START_TIME) {
-        if (modem->getLocation(lastLocation)) break;
+    
+    GPSLocation preciseLocation = {0.0, 0.0, 999.0, 0, false};
+    unsigned long gpsStart = millis();
+    bool gpsFound = false;
+    
+    while ((millis() - gpsStart) < GPS_COLD_START_TIME) {
+        if (modem->getLocation(preciseLocation)) {
+            if (preciseLocation.isValid) {
+                gpsFound = true;
+                Serial.printf("[SOS] ✓ GPS válido: %.6f, %.6f (accuracy: %.1fm)\n", 
+                    preciseLocation.latitude, preciseLocation.longitude, preciseLocation.accuracy);
+                break;
+            }
+        }
         delay(100);
     }
     
-    // Parpadear LED
-    for (int i = 0; i < 5; i++) {
-        digitalWrite(PIN_LED_ESTADO, i % 2);
-        delay(100);
+    // ===== DISPARO 2: PRECISO (si GPS disponible) =====
+    if (gpsFound) {
+        Serial.println("[SOS] DISPARO 2: Enviando ubicación precisa...");
+        bool sent2 = modem->sendSOSAlert(deviceId, ownerUid, sosType, preciseLocation);
+        if (sent2) {
+            Serial.println("[SOS] ✓ DISPARO 2 exitoso");
+            lastLocation = preciseLocation; // Actualizar últimas coordenadas
+        } else {
+            Serial.println("[SOS] ⚠️ DISPARO 2 falló (pero alerta ya enviada)");
+        }
+    } else {
+        Serial.println("[SOS] ⚠️ GPS no disponible - Solo Disparo 1 enviado");
     }
     
-    // Enviar alerta
-    bool sent = modem && modem->isConnected() && modem->sendSOSAlert(sosType, lastLocation);
-    Serial.println(sent ? "[SOS] ✓ Enviada" : "[SOS] ✗ Error");
-    
-    if (sent) digitalWrite(PIN_LED_ESTADO, HIGH);
-    
-    // Actualizar estado
+    // Actualizar estado (updateLEDs() manejará el LED)
     deviceState = (sosType == "general") ? DeviceState::SOS_GENERAL :
                   (sosType == "medica") ? DeviceState::SOS_MEDICA : DeviceState::SOS_SEGURIDAD;
+
+    // Volver a ONLINE tras completar la alerta para permitir nuevos disparos
+    deviceState = DeviceState::ONLINE;
 }
 
 // ===== ACTIVAR MODO APROVISIONAMIENTO BLE =====
@@ -317,28 +348,19 @@ void enterProvisioningMode() {
         delay(50);
         
         if (bleConnected) {
-            // LED parpadea RÁPIDO durante handshake
-            digitalWrite(PIN_LED_ESTADO, (millis() / 100) % 2);
-        } else {
-            // LED FIJO mientras espera conexión
-            digitalWrite(PIN_LED_ESTADO, HIGH);
+            Serial.println("[PROVISIONING] Cliente conectado...");
         }
     }
     
     if (!isProvisioned) {
         Serial.println("[BLE] Timeout - Volviendo a IDLE");
         NimBLEDevice::deinit(true);
-        digitalWrite(PIN_LED_ESTADO, LOW);
         deviceState = DeviceState::IDLE;
         return;
     }
     
     // Vinculación exitosa
     Serial.println("[BLE] Vinculacion exitosa");
-    for (int i = 0; i < 6; i++) {
-        digitalWrite(PIN_LED_ESTADO, i % 2);
-        delay(150);
-    }
     
     // Apagar BLE
     NimBLEDevice::deinit(true);
@@ -388,7 +410,7 @@ void checkButtons() {
         }
         
         // 3 segundos = Enviar SOS (solo si aprovisionado)
-        if (holdTime >= 3000 && !actionTriggered && isProvisioned && deviceState == DeviceState::ONLINE) {
+            if (holdTime >= 3000 && !actionTriggered && isProvisioned) {
             actionTriggered = true;
             Serial.println("[BTN] ✓ 3s detectados - Enviando SOS");
             sendSOSAlert("general");
@@ -453,35 +475,53 @@ void updateStateMachine() {
 
 // ===== ACTUALIZACIÓN DE LEDS =====
 // Centraliza toda la lógica de LEDs para evitar conflictos
+// Patrones según especificación:
+// - Boot: LED_LINK parpadea -> Apaga (Idle)
+// - Vinculación: LED_LINK FIJO (Esperando) -> PARPADEA (Conectando)
+// - Alerta SOS: LED_ALERT parpadea RÁPIDO
+// - OTA: Ambos parpadean
 void updateLEDs() {
-    // PIN_LED_ESTADO: Disponible en HARDWARE_A, B, C
+    // OTA: Ambos LEDs parpadean
+    if (isOTAInProgress) {
+        bool blink = (millis() / 300) % 2;
+        digitalWrite(PIN_LED_LINK, blink);
+        #if defined(HARDWARE_B) || defined(HARDWARE_C)
+            digitalWrite(PIN_LED_ALERT, blink);
+        #endif
+        return;
+    }
     
-    // Si es SOS, LED siempre ENCENDIDO (alerta crítica)
+    // SOS: LED_ALERT parpadea RÁPIDO
     if (deviceState >= DeviceState::SOS_GENERAL && deviceState <= DeviceState::SOS_SEGURIDAD) {
-        digitalWrite(PIN_LED_ESTADO, HIGH);
+        bool blinkFast = (millis() / 150) % 2;
+        digitalWrite(PIN_LED_LINK, LOW);
+        #if defined(HARDWARE_B) || defined(HARDWARE_C)
+            digitalWrite(PIN_LED_ALERT, blinkFast);
+        #endif
         return;
     }
     
-    // Si NO está aprovisionado: parpadeo solo durante la ventana inicial, luego OFF
-    if (!isProvisioned) {
-        if ((millis() - bootTimestamp) < UNPROV_BLINK_WINDOW_MS) {
-            bool blink = (millis() / 500) % 2;
-            digitalWrite(PIN_LED_ESTADO, blink);
+    // Vinculación: LED_LINK FIJO (esperando) -> PARPADEA (conectando)
+    if (deviceState == DeviceState::PROVISIONING) {
+        if (bleConnected) {
+            // Conectando: PARPADEA
+            bool blink = (millis() / 200) % 2;
+            digitalWrite(PIN_LED_LINK, blink);
         } else {
-            digitalWrite(PIN_LED_ESTADO, LOW);
+            // Esperando: FIJO
+            digitalWrite(PIN_LED_LINK, HIGH);
         }
+        #if defined(HARDWARE_B) || defined(HARDWARE_C)
+            digitalWrite(PIN_LED_ALERT, LOW);
+        #endif
         return;
     }
 
-    // Si está aprovisionado pero aún no ONLINE visible (sin heartbeat 2xx), seguir parpadeando
-    if (deviceState != DeviceState::ONLINE || !lastHeartbeatOk) {
-        bool blink = (millis() / 500) % 2;
-        digitalWrite(PIN_LED_ESTADO, blink);
-        return;
-    }
-
-    // Modo ONLINE estable: LED APAGADO (silencioso)
-    digitalWrite(PIN_LED_ESTADO, LOW);
+    // Modo ONLINE/IDLE: LED_LINK apagado (Idle)
+    digitalWrite(PIN_LED_LINK, LOW);
+    #if defined(HARDWARE_B) || defined(HARDWARE_C)
+        digitalWrite(PIN_LED_ALERT, LOW);
+    #endif
 }
 
 // ===== ACTUALIZACIÓN PERIÓDICA DE UBICACIÓN =====
@@ -533,7 +573,6 @@ void attemptAutoRecovery() {
         
         // Cambiar a estado ONLINE
         deviceState = DeviceState::ONLINE;
-        digitalWrite(PIN_LED_ESTADO, HIGH);
     } else {
         Serial.println("[AUTO-RECOVER] Dispositivo no encontrado en Firestore - Requiere vinculación manual");
     }
@@ -551,69 +590,40 @@ void sendHeartbeat() {
     bool nvs_provisioned = preferences.getBool("provisioned", true);
     preferences.end();
     
-    // Intervalo base
+    // Intervalo adaptativo para detección rápida de unlink
     unsigned long heartbeat_check_interval = HEARTBEAT_INTERVAL;
-
-    // Ventana inicial: mantener intervalos cortos para detectar unlink y 404/410 rápido
-    if (millis() < HEARTBEAT_EARLY_WINDOW_MS) {
-        heartbeat_check_interval = HEARTBEAT_FAST_INTERVAL;
-    }
-
-    // Si está marcado como desprovisionado en NVS, usar siempre intervalo rápido
+    
+    // Si está desprovisionado, usar intervalo rápido
     if (!nvs_provisioned) {
         heartbeat_check_interval = HEARTBEAT_FAST_INTERVAL;
     }
-
-    // Primer heartbeat después de 45s para dar tiempo a que Firestore cree el documento
-    if (!firstHeartbeatSent) {
-        heartbeat_check_interval = 45000UL;
-    }
-
+    
     if ((millis() - lastHeartbeat) < heartbeat_check_interval) {
         return;
     }
 
     bool sent = modem->sendHeartbeat(ownerUid, deviceId, lastLocation);
 
-#ifdef HARDWARE_A
-    lastHeartbeatOk = sent; // HTTPS modem no expone status, usamos éxito de envío
-#else
-    {
-        ModemProxy* m = (ModemProxy*)modem;
-        if (m) {
-            int st = m->getLastHttpStatus();
-            lastHeartbeatOk = (st >= 200 && st < 300);
-        }
+    // Para ModemProxy (A7670SA) con HTTPS directo
+    ModemProxy* m = (ModemProxy*)modem;
+    if (m) {
+        int st = m->getLastHttpStatus();
+        lastHeartbeatOk = (st >= 200 && st < 300);
+        Serial.printf("[HEARTBEAT] lastHeartbeatOk=%d (status=%d)\n", lastHeartbeatOk, st);
     }
-#endif
 
     if (sent) {
         lastHeartbeat = millis();
-        Serial.println("[HEARTBEAT] Enviado");
-#ifdef HARDWARE_A
-        bool inSOS = (deviceState == DeviceState::SOS_GENERAL || deviceState == DeviceState::SOS_MEDICA || deviceState == DeviceState::SOS_SEGURIDAD);
-        if (!inSOS) {
-            Serial.println("[POWER] Deep Sleep 15m");
-            esp_sleep_enable_timer_wakeup(15ULL * 60ULL * 1000000ULL);
-            esp_deep_sleep_start();
-        }
-#endif
+        firstHeartbeatSent = true;
+        Serial.println("[HEARTBEAT] ✓ Enviado");
     } else {
-        Serial.println("[HEARTBEAT] Error");
+        Serial.println("[HEARTBEAT] ✗ Error");
     }
-    firstHeartbeatSent = true;
-    lastHeartbeat = millis();
 }
 // ===== FACTORY RESET =====
 // Borra configuración y reinicia el dispositivo
 void performFactoryReset() {
     Serial.println("[RESET] ⚠️ Ejecutando Factory Reset...");
-    
-    // Parpadear LEDs indicando reset
-    for (int i = 0; i < 10; i++) {
-        digitalWrite(PIN_LED_ESTADO, i % 2);
-        delay(200);
-    }
     
     // Borrar NVS
     preferences.begin("wilobu", false);
@@ -652,11 +662,13 @@ void setup() {
     
     // Inicializar componentes
     setupPins();
+    
+    // Boot: LED_LINK parpadea durante inicialización
     for (int i = 0; i < 6; i++) {
-        digitalWrite(PIN_LED_ESTADO, i % 2);
+        digitalWrite(PIN_LED_LINK, i % 2);
         delay(120);
     }
-    digitalWrite(PIN_LED_ESTADO, LOW);
+    digitalWrite(PIN_LED_LINK, LOW); // Apagar tras boot
     
     // Cargar configuración desde NVS
     preferences.begin("wilobu", true);  // read-only
@@ -700,15 +712,67 @@ void setup() {
     // Intentar inicializar módem siempre (para auto-recovery)
     setupModem();
     
-    // Si ya está aprovisionado, ir directo a ONLINE
-    if (isProvisioned) {
+    // Si ya está aprovisionado: GNSS + Heartbeat inicial + Deep Sleep
+    if (isProvisioned && modem && modem->isConnected()) {
         deviceState = DeviceState::ONLINE;
-        Serial.println("\n[SETUP] Sistema inicializado - Modo ONLINE");
-    } else {
-        // Dispositivo sin vincular pero módem conectado - intentar auto-recovery
+        Serial.println("\n[BOOT] Dispositivo provisionado -> Obteniendo ubicación inicial...");
+        
+        // Iniciar GNSS
+        modem->initGNSS();
+        unsigned long gpsStart = millis();
+        bool fixObtained = false;
+        
+        // Esperar hasta 45s para obtener Fix
+        while ((millis() - gpsStart) < GPS_COLD_START_TIME) {
+            if (modem->getLocation(lastLocation) && lastLocation.isValid) {
+                fixObtained = true;
+                Serial.printf("[BOOT] ✓ GPS Fix: %.6f, %.6f\n", lastLocation.latitude, lastLocation.longitude);
+                break;
+            }
+            delay(100);
+        }
+        
+        if (!fixObtained) {
+            Serial.println("[BOOT] ⚠️ GPS timeout - Enviando heartbeat sin ubicación");
+            lastLocation.isValid = false;
+        }
+        
+        // Enviar heartbeat inicial (con o sin GPS)
+        Serial.println("[BOOT] Enviando heartbeat inicial...");
+        bool sent = modem->sendHeartbeat(ownerUid, deviceId, lastLocation);
+
+        // Actualizar flag de éxito para la lógica de LED (online visible)
+        ModemProxy* m = (ModemProxy*)modem;
+        if (m) {
+            int st = m->getLastHttpStatus();
+            lastHeartbeatOk = (st >= 200 && st < 300);
+        }
+        
+        if (sent) {
+            Serial.println("[BOOT] ✓ Heartbeat enviado");
+            lastHeartbeat = millis();
+            firstHeartbeatSent = true;
+            #if DEEP_SLEEP_ENABLED
+            // Deep Sleep según tier
+            unsigned long sleepTime = HEARTBEAT_INTERVAL / 1000; // Convertir a segundos
+            Serial.printf("[BOOT] Deep Sleep %lu segundos\n", sleepTime);
+            esp_sleep_enable_timer_wakeup(sleepTime * 1000000ULL);
+            esp_deep_sleep_start();
+            #else
+            Serial.println("[BOOT] Deep Sleep DESACTIVADO (dev mode)");
+            #endif
+        } else {
+            Serial.println("[BOOT] ✗ Error en heartbeat - Continuando en modo normal");
+        }
+    } else if (!isProvisioned) {
+        // Dispositivo virgen: IDLE con radio apagada
         deviceState = DeviceState::IDLE;
-        digitalWrite(PIN_LED_ESTADO, LOW);
-        Serial.println("\n[SETUP] Sistema en IDLE - Esperando vinculación (auto-recovery habilitado)");
+        Serial.println("\n[BOOT] Dispositivo NO provisionado -> IDLE (Radio OFF)");
+        
+        // Apagar módem para ahorrar energía
+        if (modem) {
+            Serial.println("[BOOT] Apagando radio LTE...");
+        }
     }
 }
 
@@ -775,6 +839,97 @@ void loop() {
                 Serial.println("[SERIAL AT] Modem no inicializado");
             }
         }
+        else if (cmd == "gps_test") {
+            Serial.println("\n=== Test GPS A7670SA ===");
+            if (modem) {
+                // Test 1: Verificación básica
+                Serial.println("\n[1] Verificando comunicación...");
+                ModemSerial.println("AT");
+                delay(500);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 2: Info del módulo
+                Serial.println("\n[2] Info del módulo (AT+SIMCOMATI)...");
+                ModemSerial.println("AT+SIMCOMATI");
+                delay(1000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 3: Estado GNSS Power
+                Serial.println("\n[3] Consultando GNSS Power (AT+CGNSSPWR=?)...");
+                ModemSerial.println("AT+CGNSSPWR=?");
+                delay(1000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                Serial.println("\n[4] Estado actual (AT+CGNSSPWR?)...");
+                ModemSerial.println("AT+CGNSSPWR?");
+                delay(1000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 4: Energizar GNSS
+                Serial.println("\n[5] Energizando GNSS (AT+CGNSSPWR=1)...");
+                ModemSerial.println("AT+CGNSSPWR=1");
+                delay(2000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 5: Esperar READY
+                Serial.println("\n[6] Esperando +CGNSSPWR: READY! (10s)...");
+                unsigned long start = millis();
+                while (millis() - start < 10000) {
+                    if (ModemSerial.available()) {
+                        Serial.write(ModemSerial.read());
+                    }
+                }
+                
+                // Test 6: Activar salida
+                Serial.println("\n[7] Activando salida (AT+CGNSSTST=1)...");
+                ModemSerial.println("AT+CGNSSTST=1");
+                delay(1000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 7: Puerto NMEA
+                Serial.println("\n[8] Configurando puerto (AT+CGNSSPORTSWITCH=0,1)...");
+                ModemSerial.println("AT+CGNSSPORTSWITCH=0,1");
+                delay(1000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                // Test 8: Intentar fix (5 intentos)
+                Serial.println("\n[9] Intentando obtener fix GPS (5 intentos)...");
+                for (int i = 0; i < 5; i++) {
+                    Serial.printf("  Intento %d/5 (AT+CGPSINFO)...\n", i+1);
+                    ModemSerial.println("AT+CGPSINFO");
+                    delay(3000);
+                    while (ModemSerial.available()) {
+                        Serial.write(ModemSerial.read());
+                    }
+                }
+                
+                // Test 9: Info adicional
+                Serial.println("\n[10] Info adicional (AT+CGNSSINFO)...");
+                ModemSerial.println("AT+CGNSSINFO");
+                delay(2000);
+                while (ModemSerial.available()) {
+                    Serial.write(ModemSerial.read());
+                }
+                
+                Serial.println("\n=== Fin Test GPS ===\n");
+            } else {
+                Serial.println("[GPS_TEST] Modem no inicializado");
+            }
+        }
     }
     updateStateMachine();
     checkButtons();
@@ -791,6 +946,21 @@ void loop() {
     sendHeartbeat();
     checkFactoryReset();
     updateLEDs();
+    
+    // Deep sleep si no está en SOS y pasó el intervalo
+    bool inSOS = (deviceState == DeviceState::SOS_GENERAL || 
+                  deviceState == DeviceState::SOS_MEDICA || 
+                  deviceState == DeviceState::SOS_SEGURIDAD);
+    
+    #if DEEP_SLEEP_ENABLED
+    if (!inSOS && firstHeartbeatSent && (millis() - lastHeartbeat) >= HEARTBEAT_INTERVAL) {
+        Serial.println("[POWER] Ciclo completado -> Deep Sleep");
+        unsigned long sleepTime = HEARTBEAT_INTERVAL / 1000;
+        Serial.printf("[POWER] Deep Sleep %lu segundos\n", sleepTime);
+        esp_sleep_enable_timer_wakeup(sleepTime * 1000000ULL);
+        esp_deep_sleep_start();
+    }
+    #endif
     
     delay(100);
 }

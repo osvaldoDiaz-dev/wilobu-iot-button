@@ -10,7 +10,7 @@ import 'features/auth/presentation/register_page.dart';
 import 'features/home/presentation/home_page.dart';
 import 'features/devices/presentation/add_device_page.dart';
 import 'features/devices/presentation/device_settings_view.dart';
-import 'features/contacts/presentation/contacts_page.dart';
+import 'features/contacts/presentation/contacts_page_v2.dart';
 import 'features/alerts/presentation/alerts_page.dart';
 import 'features/sos/sos_alert_page.dart';
 import 'features/profile/presentation/profile_page.dart';
@@ -114,7 +114,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/contacts',
-        builder: (context, state) => const ContactsPage(),
+        builder: (context, state) => const ContactsPageV2(),
       ),
       GoRoute(
         path: '/alerts',

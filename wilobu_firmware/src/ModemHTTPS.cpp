@@ -89,13 +89,20 @@ bool ModemHTTPS::sendToCloudFunction(const String& path, const String& json) {
 }
 
 // ===== SOS & HEARTBEAT =====
-bool ModemHTTPS::sendSOSAlert(const String& sosType, const GPSLocation& loc) {
+bool ModemHTTPS::sendSOSAlert(const String& deviceId, const String& ownerUid, const String& sosType, const GPSLocation& loc) {
     JsonDocument doc;
-    doc["fields"]["status"]["stringValue"] = "sos_" + sosType;
-    doc["fields"]["lastLocation"]["geopointValue"]["latitude"] = loc.latitude;
-    doc["fields"]["lastLocation"]["geopointValue"]["longitude"] = loc.longitude;
+    doc["deviceId"] = deviceId;
+    doc["ownerUid"] = ownerUid;
+    doc["status"] = "sos_" + sosType;
+    if (loc.isValid) {
+        doc["lastLocation"]["lat"] = loc.latitude;
+        doc["lastLocation"]["lng"] = loc.longitude;
+        doc["lastLocation"]["accuracy"] = loc.accuracy;
+    } else {
+        doc["lastLocation"] = nullptr;
+    }
     String json; serializeJson(doc, json);
-    return sendToFirebase("/users/{userId}/devices/{deviceId}", json);
+    return !httpsPost("https://us-central1-wilobu-d21b2.cloudfunctions.net/heartbeat", json).isEmpty();
 }
 
 bool ModemHTTPS::sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& loc) {
@@ -105,8 +112,8 @@ bool ModemHTTPS::sendHeartbeat(const String& ownerUid, const String& deviceId, c
     doc["status"] = "online";
     doc["timestamp"] = millis();
     if (loc.isValid) {
-        doc["lastLocation"]["latitude"] = loc.latitude;
-        doc["lastLocation"]["longitude"] = loc.longitude;
+        doc["lastLocation"]["lat"] = loc.latitude;
+        doc["lastLocation"]["lng"] = loc.longitude;
         doc["lastLocation"]["accuracy"] = loc.accuracy;
     }
     String json; serializeJson(doc, json);

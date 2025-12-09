@@ -9,7 +9,6 @@ admin.initializeApp();
 exports.fixBidirectionalContacts = require('./fixContacts').fixBidirectionalContacts;
 
 // ===== CONFIGURACIÓN =====
-const NOTIFICATION_COOLDOWN = 5000;  // Esperar 5s antes de enviar duplicadas
 const MAX_FCM_TOKENS_PER_USER = 10;  // Máximo de dispositivos por usuario
 const PSK_SECRET = 'wilobu_psk_secret_2025';  // Pre-shared key para auth
 
@@ -92,10 +91,41 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
             lastSeen: admin.firestore.FieldValue.serverTimestamp()
         };
         
-        // Agregar ubicación si viene
-        if (lastLocation && lastLocation.lat && lastLocation.lng) {
+        // ===== ESTRATEGIA "DOBLE DISPARO" PARA SOS =====
+        if (status && status.startsWith('sos_')) {
+            // Crear alerta en sub-colección para trigger independiente
+            const alertRef = deviceRef.collection('alerts').doc();
+            const alertData = {
+                type: status,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                processed: false
+            };
+            
+            if (!lastLocation || !lastLocation.lat || !lastLocation.lng) {
+                // Disparo 1: Usar ubicación histórica
+                console.log(`[HEARTBEAT] Disparo 1 (SOS sin ubicación) -> Usando lastLocation histórica`);
+                alertData.location = current.lastLocation?.geopoint || null;
+                alertData.isPreliminary = true;
+            } else {
+                // Disparo 2: Ubicación precisa
+                console.log(`[HEARTBEAT] Disparo 2 (SOS con ubicación) -> Actualizando lastLocation`);
+                const newLocation = {
+                    geopoint: new admin.firestore.GeoPoint(lastLocation.lat, lastLocation.lng),
+                    accuracy: lastLocation.accuracy || null,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp()
+                };
+                update.lastLocation = newLocation;
+                alertData.location = newLocation.geopoint;
+                alertData.isPreliminary = false;
+            }
+            
+            await alertRef.set(alertData);
+            console.log(`[HEARTBEAT] Alerta creada: ${alertRef.id}`);
+        } else if (lastLocation && lastLocation.lat && lastLocation.lng) {
+            // Heartbeat normal con ubicación: Actualizar
             update.lastLocation = {
                 geopoint: new admin.firestore.GeoPoint(lastLocation.lat, lastLocation.lng),
+                accuracy: lastLocation.accuracy || null,
                 timestamp: admin.firestore.FieldValue.serverTimestamp()
             };
         }
@@ -124,61 +154,47 @@ exports.heartbeat = functions.https.onRequest(async (req, res) => {
 
 // ===== CLOUD FUNCTION: ALERTA SOS =====
 /**
- * Se ejecuta automáticamente cuando cambia el status de un dispositivo
- * Si el status es SOS (sos_general, sos_medica, sos_seguridad):
+ * Se ejecuta automáticamente cuando se crea una alerta en la sub-colección
+ * Procesa cada disparo SOS independientemente (Disparo 1 y 2)
  * 1. Lee los contactos de emergencia del dispositivo
  * 2. Busca los FCM tokens de cada contacto en Firestore
  * 3. Envía notificaciones push a través de FCM
  * 4. Elimina tokens inválidos automáticamente
  */
-exports.onDeviceStatusChange = functions.firestore
-    .document('users/{userId}/devices/{deviceId}')
-    .onUpdate(async (change, context) => {
+exports.onAlertCreated = functions.firestore
+    .document('users/{userId}/devices/{deviceId}/alerts/{alertId}')
+    .onCreate(async (snap, context) => {
         try {
-            const before = change.before.data();
-            const after = change.after.data();
-            const { userId, deviceId } = context.params;
+            const alertData = snap.data();
+            const { userId, deviceId, alertId } = context.params;
             
-            // Validar que los datos existan
-            if (!before || !after) {
-                console.log('[SOS-HANDLER] Datos incompletos, abortando');
+            console.log(`[SOS-HANDLER] Nueva alerta: ${alertId} (${alertData.type})`);
+            
+            // Obtener datos del dispositivo
+            const deviceDoc = await admin.firestore()
+                .collection('users').doc(userId)
+                .collection('devices').doc(deviceId)
+                .get();
+            
+            if (!deviceDoc.exists) {
+                console.warn('[SOS-HANDLER] Dispositivo no existe');
                 return null;
             }
             
-            const oldStatus = before.status || 'unknown';
-            const newStatus = after.status || 'unknown';
-            
-            // Solo procesar si cambió el status
-            if (oldStatus === newStatus) {
-                console.log('[SOS-HANDLER] Status sin cambios, ignorando');
-                return null;
-            }
-            
-            console.log(`[SOS-HANDLER] Transición: ${oldStatus} → ${newStatus}`);
+            const deviceData = deviceDoc.data();
+            const sosStatus = alertData.type;
             
             // Solo procesar alertas SOS
-            if (!newStatus.startsWith('sos_')) {
+            if (!sosStatus.startsWith('sos_')) {
                 console.log('[SOS-HANDLER] No es una alerta SOS, ignorando');
                 return null;
             }
             
-            // Evitar procesamiento duplicado (cooldown)
-            const lastProcessed = after.lastSOSProcessed || 0;
-            if (Date.now() - lastProcessed < NOTIFICATION_COOLDOWN) {
-                console.log('[SOS-HANDLER] Alerta duplicada en cooldown, ignorando');
-                return null;
-            }
-            
             // ===== PROCESAR ALERTA SOS =====
-            await processSosAlert(userId, deviceId, newStatus, after);
+            await processSosAlert(userId, deviceId, sosStatus, deviceData, alertData);
             
             // Marcar como procesada
-            await admin.firestore()
-                .collection('users').doc(userId)
-                .collection('devices').doc(deviceId)
-                .update({
-                    lastSOSProcessed: Date.now()
-                });
+            await snap.ref.update({ processed: true });
             
             return null;
             
@@ -189,8 +205,8 @@ exports.onDeviceStatusChange = functions.firestore
     });
 
 // ===== PROCESAMIENTO DE ALERTA SOS =====
-async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
-    console.log(`[PROCESSING] Procesando alerta SOS: ${sosStatus}`);
+async function processSosAlert(userId, deviceId, sosStatus, deviceData, alertData) {
+    console.log(`[PROCESSING] Procesando alerta SOS: ${sosStatus} (${alertData.isPreliminary ? 'Disparo 1' : 'Disparo 2'})`);
     
     // ===== OBTENER NOMBRE DEL DUEÑO DEL DISPOSITIVO =====
     let ownerName = 'Usuario';
@@ -240,7 +256,11 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
     const sosMessage = sosMessages[config.type.toLowerCase()] || config.defaultMessage;
     
     // Obtener contactos de emergencia
-    const emergencyContacts = deviceData.emergencyContacts || [];
+    const emergencyContacts = [...(deviceData.emergencyContacts || [])];
+    // Asegurar que el dueño también recibe la alerta (si no está en la lista)
+    if (!emergencyContacts.some(c => c.uid === userId)) {
+        emergencyContacts.unshift({ uid: userId, name: ownerName || 'Dueño' });
+    }
     
     if (emergencyContacts.length === 0) {
         console.log('[PROCESSING] ✗ Sin contactos de emergencia configurados');
@@ -249,14 +269,28 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
     
     console.log(`[PROCESSING] Notificando a ${emergencyContacts.length} contactos`);
     
-    // Obtener información de ubicación
-    const location = deviceData.lastLocation || null;
+    // Obtener información de ubicación desde alertData (prioridad) o deviceData
+    const location = alertData.location || deviceData.lastLocation?.geopoint || null;
     let locationText = 'Ubicación no disponible';
     let locationMapUrl = null;
     
-    if (location && location.latitude && location.longitude) {
-        locationText = `Lat: ${location.latitude.toFixed(6)}, Lon: ${location.longitude.toFixed(6)}`;
-        locationMapUrl = `https://maps.google.com/?q=${location.latitude},${location.longitude}`;
+    if (location) {
+        let lat, lng;
+        
+        if (location._latitude !== undefined) {
+            // GeoPoint directo
+            lat = location._latitude;
+            lng = location._longitude;
+        } else if (location.latitude && location.longitude) {
+            // Objeto plano
+            lat = location.latitude;
+            lng = location.longitude;
+        }
+        
+        if (lat !== undefined && lng !== undefined) {
+            locationText = `Lat: ${lat.toFixed(6)}, Lon: ${lng.toFixed(6)}`;
+            locationMapUrl = `https://maps.google.com/?q=${lat},${lng}`;
+        }
     }
     
     // Array de promesas para envío paralelo
@@ -274,7 +308,8 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
             config,
             sosMessage,
             locationText,
-            locationMapUrl
+            locationMapUrl,
+            location
         );
         
         notificationPromises.push(promise);
@@ -299,12 +334,13 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
     console.log(`[PROCESSING] ✓ Resultado: ${successCount} éxitos, ${failureCount} fallos`);
     
     // ===== GUARDAR EN alertHistory DEL DISPOSITIVO =====
-    // Reutilizamos la variable 'location' que ya existe arriba
     let alertGeopoint = null;
-    if (location && location.geopoint) {
-        alertGeopoint = location.geopoint;
-    } else if (location && location.latitude && location.longitude) {
-        alertGeopoint = new admin.firestore.GeoPoint(location.latitude, location.longitude);
+    if (location) {
+        if (location._latitude !== undefined) {
+            alertGeopoint = location; // Ya es un GeoPoint
+        } else if (location.latitude && location.longitude) {
+            alertGeopoint = new admin.firestore.GeoPoint(location.latitude, location.longitude);
+        }
     }
     
     await admin.firestore()
@@ -316,6 +352,7 @@ async function processSosAlert(userId, deviceId, sosStatus, deviceData) {
             sosType: sosStatus,
             message: sosMessage,
             location: alertGeopoint,
+            isPreliminary: alertData.isPreliminary || false,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             deviceId: deviceId,
             ownerUid: userId,
@@ -352,7 +389,8 @@ async function sendSOSNotificationToContact(
     config,
     sosMessage,
     locationText,
-    locationMapUrl
+    locationMapUrl,
+    alertLocation
 ) {
     try {
         console.log(`[CONTACT] Procesando contacto: ${contactName} (${contactUid})`);
@@ -447,11 +485,13 @@ async function sendSOSNotificationToContact(
         console.log(`[CONTACT] ✓ ${contactName}: ${response.successCount} éxitos, ${response.failureCount} fallos`);
         
         // ===== GUARDAR ALERTA EN receivedAlerts DEL CONTACTO =====
-        const location = deviceData.lastLocation || null;
+        const location = alertLocation || deviceData.lastLocation || null;
         let geopoint = null;
-        if (location && location.geopoint) {
+        if (location && location._latitude !== undefined) {
+            geopoint = location;
+        } else if (location && location.geopoint) {
             geopoint = location.geopoint;
-        } else if (location && location.latitude && location.longitude) {
+        } else if (location && location.latitude !== undefined && location.longitude !== undefined) {
             geopoint = new admin.firestore.GeoPoint(location.latitude, location.longitude);
         }
         

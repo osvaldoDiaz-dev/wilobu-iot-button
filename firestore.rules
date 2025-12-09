@@ -41,22 +41,35 @@ service cloud.firestore {
         // El dueño puede leer/escribir sus propios dispositivos
         allow read, write: if isOwner(userId);
         
-        // Los contactos de emergencia o viewers pueden leer el dispositivo
+        // Los contactos de emergencia o viewers pueden leer el dispositivo (incluyendo lastLocation)
         allow read: if isSignedIn() && (
           request.auth.uid in resource.data.get('emergencyContacts', []) ||
           request.auth.uid in resource.data.get('viewerUids', [])
         );
         
-      // Permitir update solo si se está añadiendo al array de emergencyContacts, viewerUids, o monitored_devices
-      // (cuando un usuario acepta una solicitud de contacto)
-      allow update: if isSignedIn() && 
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts', 'viewerUids', 'monitored_devices']);        // Subcolección de historial de alertas del dispositivo
+        // Permitir update solo si se está añadiendo al array de emergencyContacts, viewerUids, o monitored_devices
+        allow update: if isSignedIn() && 
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emergencyContacts', 'viewerUids', 'monitored_devices']);
+        
+        // Subcolección de historial de alertas del dispositivo
         match /alertHistory/{alertId} {
           // El dueño puede leer y escribir su historial
           allow read, write: if isOwner(userId);
           
           // Los contactos de emergencia pueden leer el historial
           allow read: if isSignedIn();
+        }
+        
+        // Subcolección de alertas (para doble-disparo SOS)
+        match /alerts/{alertId} {
+          // El dueño puede leer y escribir
+          allow read, write: if isOwner(userId);
+          
+          // Viewers y emergencyContacts pueden leer
+          allow read: if isSignedIn() && (
+            request.auth.uid in resource.data.get('viewerUids', []) ||
+            request.auth.uid in resource.data.get('emergencyContacts', [])
+          );
         }
       }
       
@@ -78,12 +91,11 @@ service cloud.firestore {
     
     // Regla especial para collectionGroup query de devices
     // Permite buscar dispositivos donde el usuario es el dueño o viewer
-    // También permite queries con whereIn por document ID
     match /{path=**}/devices/{deviceId} {
       allow read: if isSignedIn() && (
         resource.data.get('ownerUid', '') == request.auth.uid ||
         request.auth.uid in resource.data.get('viewerUids', []) ||
-        request.auth.uid in resource.data.get('monitored_devices', [])
+        request.auth.uid in resource.data.get('emergencyContacts', [])
       );
     }
   }

@@ -22,41 +22,54 @@ Proyecto: Wilobu (Sistema de seguridad IoT para niños con TEA).
 3. REGLAS ESPECIFICAS POR TECNOLOGIA
 
 A. FIRMWARE (C++ / PlatformIO)
-- Abstracción IModem:
-  1. Tier A (SIM7080G): Cliente HTTPS Nativo (TLS 1.2). Directo a Firebase.
-  2. Tier B (A7670SA): Cliente HTTP estándar. Vía Proxy (Cloudflare).
-- Conectividad (APN):
-  - Tier A (Prod): SIM Global **Hologram** (APN="hologram").
-  - Tier B (Dev): SIM Local (APN="internet" o según proveedor).
-- Pines Hardware:
-  - Tier A (LILYGO): Botones SOS=GPIO 15, 4, 13; Power=GPIO 27.
-  - Tier B (Dev): Botón SOS=GPIO 15; TX=17 (UART2 TX); RX=16 (UART2 RX).
+- Estrategia de Build (platformio.ini):
+  - `[env:tier_a]`: Flag `-D HARDWARE_TIER_A` (LILYGO/SIM7080).
+  - `[env:tier_b]`: Flag `-D HARDWARE_TIER_B` (ESP32/A7670SA).
+- Abstracción IModem (Comandos AT Específicos):
+  - **Tier A (SIM7080G):** Usa familia estándar `AT+CGPS=1`, `AT+SHCONF` (HTTPS).
+  - **Tier B (A7670SA) - IMPORTANTE:**
+    - **GNSS (Diferente familia):**
+      - ERROR COMÚN: `AT+CGPS=1` falla. NO USAR.
+      - ENCENDIDO: `AT+CGNSSPWR=1` -> Esperar URC `+CGNSSPWR: READY!`.
+      - CONFIG: `AT+CGNSSTST=1` -> `AT+CGNSSPORTSWITCH=0,1` (Salida NMEA).
+      - LECTURA: `AT+CGNSSINFO` o `AT+CGPSINFO`.
+      - REINICIO (Si no hay Fix): `AT+CGPSCOLD`.
+    - **HTTP:**
+      - Ciclo Estricto: `AT+HTTPINIT` -> `AT+HTTPPARA` -> `AT+HTTPACTION` -> `AT+HTTPTERM`.
+      - Nota: `AT+HTTPTERM` devuelve ERROR si no hay sesión activa (siempre hacer INIT antes).
+- Pines Hardware (Mapeo por Flag):
+  - Tier A (LILYGO): Botones SOS=15, 4, 13; Power=27; Módem integrado.
+  - Tier B (Dev): Botón SOS=15; TX=17 (UART2); RX=16 (UART2).
 - Feedback Visual (Patrones LED):
-  - Boot/Inicio: `LED_LINK` parpadea -> Apaga (Idle).
-  - Activación Aprovisionamiento: `LED_LINK` FIJO (Esperando).
-  - Conectando App: `LED_LINK` PARPADEA.
+  - Boot: `LED_LINK` parpadea -> Apaga (Idle).
+  - Vinculación: `LED_LINK` FIJO (Esperando) -> PARPADEA (Conectando).
   - Alerta SOS: `LED_ALERT` parpadea RÁPIDO.
   - OTA: Ambos parpadean.
 - Input Handling:
   - Botón 1 (Asistencia): 3s = SOS General | 5s = Modo Vinculación (Solo en Idle).
   - Botón 2 (Médica) / Botón 3 (Seguridad): 3s = SOS.
-- Bluetooth (BLE): Off por defecto. Solo activación manual. Security Kill tras éxito.
-- Gestión de Energía (Heartbeat):
-  - Tier A: 15 min + Deep Sleep.
-  - Tier B: 5 min + Conexión activa.
+- Bluetooth (BLE): Solo activación manual. Security Kill tras éxito.
+- Gestión de Energía y Boot:
+  - **Secuencia de Arranque (Boot):**
+    1. Check NVS: ¿Tiene `owner_uid`?
+    2. **SI (Provisionado):** Inicia GNSS -> Fix -> Heartbeat Inicial -> Deep Sleep.
+    3. **NO (Virgen):** Idle (Radio Off). Espera Botón 1 (5s).
+  - **Ciclo Normal:** Despierta -> Envía -> Deep Sleep (Tier A: 15m / Tier B: 5m).
 
 B. FLUTTER (Dart)
 - Gestión de Estado: Riverpod.
 - Arquitectura: MVVM Pragmática.
 - Temas: Claro, Oscuro, "Wilobu Theme".
-- Mapa: Marcadores por color.
+- Mapa y Monitoreo (Lógica "En Línea"):
+  - **Cálculo Local:** `isOnline = (Ahora - device.lastHeartbeat) < (Intervalo + Buffer)`.
+  - **Estado:** Verde (Online) / Gris (Offline).
 
 C. CLOUD (Firebase & Cloudflare)
 - Firestore (NoSQL):
   - Colección 'users/{uid}': Arrays `owned_devices` y `monitored_devices`.
   - Colección 'devices/{deviceId}':
-    - ID del Documento: ID Físico (MAC/Serial).
-    - Campo `owner_uid`: UID del dueño. **REGLA:** Debe ser `null` para permitir vinculación.
+    - ID Documento: ID Físico (MAC/Serial).
+    - Campo `owner_uid`: UID dueño. **REGLA:** Debe ser `null` para vincular.
     - Campos: `lastLocation`, `cmd_reset`, `target_firmware_ver`.
     - Sub-colección 'alerts'.
 - Cloudflare Workers: Proxy HTTP->HTTPS.
@@ -64,19 +77,19 @@ C. CLOUD (Firebase & Cloudflare)
 4. FLUJOS CRITICOS
 
 A. VINCULACION (PROVISIONING SEGURO)
-1. Boot (Sin dueño): LED parpadea -> Apaga (Idle).
-2. Activación: Usuario mantiene Botón 1 (5s) -> LED Fijo (Advertising).
-3. Conexión & Validación:
-   - App conecta BLE y lee Device ID.
-   - **Check Cloud:** App consulta `devices/{deviceId}`.
-   - **Bloqueo:** Si `owner_uid != null`, ERROR ("Ya tiene dueño").
-   - **Éxito:** Si `owner_uid == null`, procede.
-4. Escritura: App escribe UID en Hardware (NVS) y en Firestore (`owner_uid` = UID).
-5. Finalización: Hardware apaga BLE (Security Kill) -> Reinicia.
+1. Activación: Botón 1 (5s) -> LED Fijo.
+2. App: Lee ID -> Checkea `owner_uid == null` -> Escribe UID.
+3. Hardware: Guarda NVS -> Kill BLE -> Reboot (Ejecuta Boot Provisionado).
 
-B. FLUJO SOS (DOBLE DISPARO)
-1. Botón 3s -> `LED_ALERT` rápido -> GNSS Cold Start.
-2. Disparo 1: Memoria. Disparo 2: GNSS Preciso.
+B. FLUJO SOS (ESTRATEGIA DOBLE DISPARO)
+1. Activación: Botón 3s -> `LED_ALERT` rápido.
+2. DISPARO 1 (Inmediato):
+   - Envía POST: `{ type: 'SOS', status: 'preliminary' }`.
+   - Backend: Busca `lastLocation` histórica y notifica.
+3. Espera Activa: Firmware espera Fix GNSS (Polling `AT+CGNSSINFO`).
+4. DISPARO 2 (Preciso):
+   - Envía POST: `{ lat: live_lat, lng: live_lng, status: 'precise' }`.
+   - Backend: Actualiza mapa y notifica ubicación exacta.
 
 C. ACTUALIZACION OTA
 1. Heartbeat detecta versión nueva -> Descarga -> Flashea -> Reboot.
@@ -87,8 +100,8 @@ D. DESVINCULACION (RESET)
 
 F. PRUEBAS Y VALIDACIONES (QA)
 1. Hardware: Latencia SOS < 5s. Precisión GNSS < 10m.
-2. App: Prevención de duplicados.
-3. Estrés: Debounce SOS. Bloqueo BLE.
+2. App: Prevención duplicados. Estado Online/Offline correcto.
+3. Estrés: Debounce SOS.
 
 5. FORMATO DE RESPUESTA
 - Dame solo el código necesario.

@@ -22,6 +22,9 @@ class ViewerDevice {
   final String status;
   final int? battery;
   final DateTime? lastSeen;
+  final double? lat;
+  final double? lng;
+  
   ViewerDevice({
     required this.ownerUid,
     required this.ownerName,
@@ -30,6 +33,8 @@ class ViewerDevice {
     required this.status,
     this.battery,
     this.lastSeen,
+    this.lat,
+    this.lng,
   });
 }
 
@@ -124,6 +129,8 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
                 status: status,
                 battery: (data['battery'] as num?)?.toInt(),
                 lastSeen: lastSeen,
+                lat: lat,
+                lng: lng,
               ));
             } catch (e) {
               print('[viewerDevicesProvider] Error leyendo device $deviceId: $e');
@@ -187,6 +194,8 @@ final viewerDevicesProvider = StreamProvider.autoDispose<List<ViewerDevice>>((re
                     status: status,
                     battery: (data['battery'] as num?)?.toInt(),
                     lastSeen: lastSeen,
+                    lat: lat,
+                    lng: lng,
                   ));
                 } catch (e) {
                   print('[viewerDevicesProvider] Error actualizando: $e');
@@ -813,6 +822,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                         isOnline: v.status == 'online',
                         battery: v.battery,
                         lastSeen: v.lastSeen,
+                        lat: v.lat,
+                        lng: v.lng,
                       )),
                       ...contactList.map((c) => _DeviceListCard(
                         title: c.formattedName,

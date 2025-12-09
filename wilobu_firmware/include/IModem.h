@@ -36,7 +36,7 @@ public:
     
     // ===== MÉTODOS DE ENVÍO DE DATOS =====
     virtual bool sendToFirebase(const String& path, const String& jsonData) = 0;
-    virtual bool sendSOSAlert(const String& sosType, const GPSLocation& location) = 0;
+    virtual bool sendSOSAlert(const String& deviceId, const String& ownerUid, const String& sosType, const GPSLocation& location) = 0;
     virtual bool sendHeartbeat(const String& ownerUid, const String& deviceId, const GPSLocation& location) = 0;
     
     // ===== MÉTODO DE AUTO-RECUPERACIÓN =====

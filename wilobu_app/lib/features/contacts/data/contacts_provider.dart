@@ -55,8 +55,8 @@ final searchUserByEmailProvider = FutureProvider.family<Map<String, dynamic>?, S
   };
 });
 
-/// Provider para obtener los contactos de emergencia de un dispositivo específico
-final deviceContactsProvider = StreamProvider.family<List<EmergencyContact>, String>((ref, deviceId) {
+/// Provider para obtener viewers de un dispositivo
+final deviceViewersProvider = StreamProvider.family<List<String>, String>((ref, deviceId) {
   final user = ref.watch(firebaseAuthProvider).currentUser;
   if (user == null) return const Stream.empty();
 
@@ -68,76 +68,70 @@ final deviceContactsProvider = StreamProvider.family<List<EmergencyContact>, Str
       .doc(deviceId)
       .snapshots()
       .map((snapshot) {
-    if (!snapshot.exists) return <EmergencyContact>[];
+    if (!snapshot.exists) return <String>[];
     
     final data = snapshot.data();
-    if (data == null) return <EmergencyContact>[];
+    if (data == null) return <String>[];
     
-    final contactsData = data['emergencyContacts'] as List<dynamic>?;
-    if (contactsData == null) return <EmergencyContact>[];
+    final viewers = data['viewerUids'] as List<dynamic>?;
+    if (viewers == null) return <String>[];
 
-    return contactsData
-        .map((c) => EmergencyContact.fromJson(c as Map<String, dynamic>, c['email'] as String? ?? ''))
-        .toList();
+    return viewers.cast<String>();
   });
 });
 
-/// Provider para agregar un contacto de emergencia a un dispositivo
-/// Ahora crea una solicitud que el contacto debe aceptar
-final addEmergencyContactProvider = Provider((ref) {
-  return ({
-    required String deviceId,
-    required String contactUid,
-    required String contactEmail,
-    required String contactName,
-    required String relation,
-  }) async {
-    final user = ref.read(firebaseAuthProvider).currentUser;
-    if (user == null) throw Exception('Usuario no autenticado');
+/// Provider para enviar solicitud de contacto
+final sendContactRequestProvider = FutureProvider.autoDispose
+    .family<void, Map<String, dynamic>>((ref, params) async {
+  final user = ref.read(firebaseAuthProvider).currentUser;
+  if (user == null) throw Exception('Usuario no autenticado');
 
-    final firestore = ref.read(firestoreProvider);
-    
-    // Obtener el nombre del dispositivo
-    final deviceDoc = await firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('devices')
-        .doc(deviceId)
-        .get();
-    
-    final deviceName = deviceDoc.data()?['name'] as String? ?? 'Wilobu';
+  final firestore = ref.read(firestoreProvider);
+  final contactUid = params['contactUid'] as String;
+  final deviceId = params['deviceId'] as String;
 
-    // Crear solicitud en la colección del usuario receptor
-    await firestore
-        .collection('users')
-        .doc(contactUid)
-        .collection('contactRequests')
-        .add({
-      'fromUid': user.uid,
-      'fromName': user.displayName ?? user.email?.split('@')[0] ?? 'Usuario',
-      'fromEmail': user.email ?? '',
-      'deviceId': deviceId,
-      'deviceName': deviceName,
-      'relation': relation,
-      'timestamp': FieldValue.serverTimestamp(),
-    });
-  };
+  // Obtener nombre del dispositivo
+  final deviceDoc = await firestore
+      .collection('users/${user.uid}/devices')
+      .doc(deviceId)
+      .get();
+
+  final deviceName = deviceDoc.data()?['nickname'] ?? 'Wilobu';
+
+  // Crear solicitud en contactRequests del receptor
+  await firestore
+      .collection('users/$contactUid/contactRequests')
+      .add({
+    'fromUid': user.uid,
+    'fromName': user.displayName ?? user.email?.split('@')[0] ?? 'Usuario',
+    'fromEmail': user.email ?? '',
+    'deviceId': deviceId,
+    'deviceName': deviceName,
+    'timestamp': FieldValue.serverTimestamp(),
+  });
 });
 
-/// Provider para eliminar un contacto de emergencia de un dispositivo
-final removeEmergencyContactProvider = Provider((ref) {
-  return ({
-    required String deviceId,
-    required Map<String, dynamic> contact,
-  }) async {
-    final user = ref.read(firebaseAuthProvider).currentUser;
-    if (user == null) throw Exception('Usuario no autenticado');
+/// Provider para remover viewer de dispositivo
+final removeViewerProvider = FutureProvider.autoDispose
+    .family<void, Map<String, dynamic>>((ref, params) async {
+  final user = ref.read(firebaseAuthProvider).currentUser;
+  if (user == null) throw Exception('Usuario no autenticado');
 
-    final firestore = ref.read(firestoreProvider);
-    final deviceRef = firestore.collection('users').doc(user.uid).collection('devices').doc(deviceId);
+  final firestore = ref.read(firestoreProvider);
+  final viewerUid = params['viewerUid'] as String;
+  final deviceId = params['deviceId'] as String;
 
-    await deviceRef.update({
-      'emergencyContacts': FieldValue.arrayRemove([contact])
-    });
-  };
+  final deviceRef = firestore
+      .collection('users/${user.uid}/devices')
+      .doc(deviceId);
+
+  // Remover viewer
+  await deviceRef.update({
+    'viewerUids': FieldValue.arrayRemove([viewerUid]),
+  });
+
+  // También remover dispositivo de monitored_devices del viewer
+  await firestore.collection('users').doc(viewerUid).update({
+    'monitored_devices': FieldValue.arrayRemove([deviceId]),
+  });
 });
